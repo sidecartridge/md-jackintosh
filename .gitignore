@@ -1,0 +1,73 @@
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
+
+ffconf.h.bak
+secrets.sh
+upload_s3.sh
+.history/
+build/
+dist/
+.cache/
+.claude/
+.DS_Store
+
+# Local planning notes, kept on the developer's machine only. Nothing that is
+# committed may reference a path under docs/ or name an item from it: inline
+# the information instead.
+docs/
+
+# Host-side developer tools: capture and build output
+tools/dev/logs/
+tools/dev/builds/
+*.pyc
+__pycache__/
