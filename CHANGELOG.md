@@ -1,5 +1,65 @@
 # Changelog
 
+## v1.0.0 (unreleased) - md-jackintosh
+
+The first version of md-jackintosh, built from the template v1.3.0. It
+serves the disks, the clock and the parameter RAM of the Jackintosh ROMs,
+which turn an Atari ST or STE into a Macintosh Plus at power-on with no TOS
+and talk to the cartridge themselves. Under TOS the cartridge only shows a
+boot screen. Seen on an STE: System 6.0.8 boots from a floppy image and from
+a hard disk image, Word 4.0a runs from the second floppy and saves to it,
+and a Restart comes back to the Finder.
+
+### Added
+
+- **The Mac's disks** (`rp/src/macdisk.c`, `rp/src/include/macdisk.h`):
+  two floppies and a hard disk as 512-byte block devices, app `$07`:
+  READ `$0700` (up to 32 sectors), WRITE `$0701` (up to 2 sectors, one
+  `send_write_sync`) and EJECT `$0702`. At power-on the first `FD0.*`,
+  `FD1.*` and `HD0.*` in the app folder are mounted: raw images
+  read-write, DiskCopy 4.2 and MacBinary II DiskCopy 4.2 read-only. The
+  status block at `$FA2300` holds the last result, an identity long
+  (`$4A4B0001`) and, per unit, flags, sectors, a change counter and the
+  format; sector data is at `$FA2400`. Writes are synced 3 s after the
+  first unsynced one. A unit an EJECT emptied, as a Mac's Restart and
+  Shut Down do, is mounted again at the ST's next boot. `macdisk.h` is the
+  contract with the ROMs.
+- **The time of day** (`rp/src/ntp.c`): an NTP client that never blocks
+  the command channel; TIME `$0703` gives UTC seconds since 1904.
+- **The parameter RAM**: PRAM_READ `$0704` and PRAM_WRITE `$0705` keep the
+  Mac's 256 bytes in `PRAM.BIN` in the app folder.
+- **The TOS boot screen** (`target/atarist/src/main.s`), in GEMDOS calls:
+  X goes to Booster, G to the GEM desktop, after 30 s Booster starts on
+  its own, and any other key stops the countdown. The version comes from
+  `version.txt`.
+- **The disk self-test** (`rp/src/devdisktest.c`, debug builds): on the
+  device, it creates its own floppy and hard disk images on the card,
+  reads and writes them through the Mac's commands and checks every byte;
+  started over SWD (`tools/dev/disktest_harness.py`) or by `SELFTEST.RUN`
+  in the app folder. `tools/dev/macdisk_harness.py` checks the commands
+  against host copies of the card's images. Debug builds log every disk
+  command after its answer.
+
+### Changed
+
+- The app folder is `/jackintosh` (the `FOLDER` default), created if it
+  is missing. The app settings version is 2 while developing, so settings
+  saved by the template build under the shared development UUID are not
+  loaded.
+- The cartridge image is `main.s` alone, with the whole 8 KB.
+- The debug mailbox holds 520 payload words, one full disk write.
+
+### Removed
+
+- The RP-drawn setup menu and everything behind it: `display.c`,
+  `display_term.c`, `term.c`, `u8g2/`, and the user firmware module
+  (`userfw.s`, `CMD_START`).
+- The download stack and the HTTPS build profile (`download.c`, `httpc/`,
+  `devdownload.c`, `md5/`, mbedTLS, `APP_DOWNLOAD_HTTPS`): the network
+  is used for NTP only.
+- The dev tools that drove the menu: `st_harness.py`, `sttest.s`,
+  `download_harness.py`, and `swd.py`'s `screen`, `text` and `key`.
+
 ## v1.3.0 (2026-09-29) - release
 
 A reliability release. The command path between the ST and the RP now

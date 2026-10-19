@@ -54,16 +54,15 @@ release: prepare dist
 prepare: clean
 	mkdir -p $(BUILD_DIR)
 
-clean-compile : clean main.o userfw.o
+clean-compile : clean main.o
 
+# The version as text for the boot screen: vasm's -D takes numbers, not strings.
 main.o: prepare
-	$(VASM) $(VASMFLAGS) $(SOURCES_DIR)/main.s -o $(BUILD_DIR)/main.o
-
-userfw.o: prepare
-	$(VASM) $(VASMFLAGS) $(SOURCES_DIR)/userfw.s -o $(BUILD_DIR)/userfw.o
+	printf '\tdc.b "%s"\n' "$(VERSION)" > $(BUILD_DIR)/version.inc
+	$(VASM) $(VASMFLAGS) -I$(BUILD_DIR) $(SOURCES_DIR)/main.s -o $(BUILD_DIR)/main.o
 
 .PHONY: build
-build: main.o userfw.o
+build: main.o
 	$(VLINK) $(addprefix $(BUILD_DIR)/,$^) $(VLINKFLAGS) -o $(BUILD_DIR)/$(BIN)
 
 

@@ -48,7 +48,7 @@ PICO_TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/14.2.rel1/arm-none-eabi/bin \
 # Same, but with DPRINTF + UART serial console enabled (see CLAUDE.md > Tests)
 PICO_TOOLCHAIN_PATH=... ./build.sh pico_w debug 44444444-4444-4444-8444-444444444444
 
-# m68k target only — faster loop when you are just editing userfw.s / main.s
+# m68k target only — faster loop when you are just editing main.s
 ST_WORKING_FOLDER=$(pwd)/target/atarist STCMD_NO_TTY=1 stcmd make release
 
 # Inspect the built RP firmware
@@ -66,13 +66,13 @@ A successful build leaves `dist/<UUID>-<version>.uf2` and
 | `the input device is not a TTY` from `stcmd` | Export `STCMD_NO_TTY=1`. `target/atarist/build.sh` already does this for every call it makes; you only need it when invoking `stcmd` yourself from a non-TTY context (CI, sub-shells, wrappers). |
 | `arm-none-eabi-gcc not found` | `PICO_TOOLCHAIN_PATH` is unset or not pointing at the toolchain's `bin` dir. |
 | Build stops on missing `CHARACTER_GAP_MS` | Re-add `#define CHARACTER_GAP_MS 700` to `rp/src/include/blink.h`. |
-| `ERROR: cartridge code is N bytes; limit is 8192` | The m68k image outgrew its 8 KB budget. Trim `main.s`/`userfw.s` or move data out of the cartridge image into `APP_FREE` / the shared variables. |
+| `ERROR: cartridge code is N bytes; limit is 8192` | The m68k image outgrew its 8 KB budget. Trim `main.s` or move data out of the cartridge image into `APP_FREE` / the shared variables. |
 | `ERROR: <script>: failed at line N` | The step on that line failed; the real error is printed just above it. Every build script stops at the first failure, and `dist/` is left empty. |
 | ``region `RAM' overflowed`` at link time | Static data (`.bss`, `.data`) leaves less than the 32 KB heap the link guarantees (`PICO_HEAP_SIZE` in `rp/src/CMakeLists.txt`), or does not fit RAM at all. Move big buffers to the heap or shrink them. |
 | The RP resets with a HardFault in deep app code | Probably a stack overflow into core 0's stack guard. `swd.py crash`, and `crash_info_ram` holds the faulting PC; `tools/dev/stackdepth.py` lists the big frames. |
 | `ERROR: unknown build type` | The second argument must be `release` or `debug` (any case). |
 | `Unable to create '.../.git/modules/<submodule>/index.lock': File exists` | A git process died in that submodule earlier. If none is running, delete the lock and build again. |
-| The ST shows garbage but terminal commands still work | `target_firmware.h` is stale: a `stcmd make` run by hand failed and the previous `BOOT.BIN` survived (the build scripts stop on that failure), so the m68k is running against the wrong shared-region addresses. Compare the timestamp of `target/atarist/dist/BOOT.BIN` against the rest of `dist/`. |
+| The ST shows garbage, or a boot screen that does not match `main.s` | `target_firmware.h` is stale: a `stcmd make` run by hand failed and the previous `BOOT.BIN` survived (the build scripts stop on that failure), so the m68k is running against the wrong shared-region addresses. Compare the timestamp of `target/atarist/dist/BOOT.BIN` against the rest of `dist/`. |
 | Commands from the ST are dropped or arrive late | Some loop is blocking without draining the ROM3 ring. Every blocking wait needs `chandler_loop()` — see CLAUDE.md > Command path. |
 | A `release` build prints nothing on serial | Expected: `DPRINTF` and UART stdio are compiled out unless the build type is `debug`. |
 | Local changes inside `pico-sdk/`, `pico-extras/` or `fatfs-sdk/` vanished | `rp/build.sh` re-checks-out the pinned revisions on every build. Never edit the submodules; FatFs config belongs in `rp/src/ff/ffconf.h`. |

@@ -2,12 +2,11 @@
 """Count power-cycled boots from the debug console.
 
 Run it, then power-cycle the ST (which powers the RP too), waiting for the
-setup menu or GEM each time. For every RP boot it prints how long after the
+boot screen or GEM each time. For every RP boot it prints how long after the
 banner the cartridge went live and whether the ST said hello (it booted
-through the cartridge: the setup menu) or not (it did not find the cartridge
+through the cartridge: the boot screen) or not (it did not find the cartridge
 in time: GEM). Three boots are the default: power cycles wear a machine this
-old, and anything that does not need a cold start is tested with a reset
-through the sentinel instead.
+old.
 
     python3 tools/dev/power_cycles.py [--boots 3]
 
@@ -74,12 +73,12 @@ def main():
             boot["hello"] = (stamp(line) - boot["banner"]).total_seconds() * 1000
             results.append(boot)
             print(f"boot {len(results)}: cartridge live +{boot.get('live', float('nan')):.0f} ms, "
-                  f"hello +{boot['hello']:.0f} ms: setup menu")
+                  f"hello +{boot['hello']:.0f} ms: boot screen")
             boot = None
 
-    menus = sum(1 for b in results if b["hello"] is not False)
-    print(f"\n{menus} of {len(results)} power-cycled boots reached the setup menu")
-    return 0 if results and menus == len(results) else 1
+    screens = sum(1 for b in results if b["hello"] is not False)
+    print(f"\n{screens} of {len(results)} power-cycled boots reached the boot screen")
+    return 0 if results and screens == len(results) else 1
 
 
 if __name__ == "__main__":

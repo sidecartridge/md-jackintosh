@@ -13,22 +13,17 @@ The template now ships with a single source-of-truth layout for the 64 KB shared
 - The cartridge image (m68k header + code) lives in the first **8 KB** (`$FA0000`–`$FA1FFF`). `target/atarist/build.sh` enforces this with a hard size check on `BOOT.BIN`.
 - A small fixed-offset metadata block (`CMD_MAGIC_SENTINEL`, `RANDOM_TOKEN`, `RANDOM_TOKEN_SEED`, 60 × 4-byte indexed shared variables) sits at `$FA2000`.
 - The **APP_FREE** arena (~48 KB at `$FA2300`) is the contiguous space your app should use for its own buffers.
-- The **framebuffer** (8000 B for 320×200 monochrome) sits at the very top of the region (`$FAE0C0`), so an overrun walks off the end of the 64 KB window instead of corrupting the metadata block.
+- The template's **framebuffer** offset (8000 B at `$FAE0C0`, the top of the region) is still defined, but this app draws nothing there: it has no RP-drawn menu.
 
 Both sides derive every offset symbolically from the constants in `rp/src/include/chandler.h` (RP-side) and `target/atarist/src/main.s` (m68k side). Apps must never hard-code an address inside the region — always reference the named offset/symbol so the layout stays the single source of truth.
 
 See `programming.md` for the full table and the budget rules.
 
-## User firmware module
+## Cartridge code
 
-The cartridge image is split via `target/atarist/src/userfw.ld` into two sections:
+This app serves the disks of the Jackintosh ROMs, which run with no TOS and never run the cartridge's code. Under TOS the cartridge, `target/atarist/src/main.s` (all 8 KB, placed by `target/atarist/src/userfw.ld`), only shows a boot screen written with GEMDOS calls: X starts Booster, G continues to the GEM desktop, and after 30 seconds Booster starts on its own; any other key stops the countdown. Every ST boot shows it again.
 
-- `main.s` at offset `0x0000` (`$FA0000`, 2 KB) — boot, dispatch, terminal.
-- `userfw.s` at offset `0x0800` (`$FA0800`, 6 KB) — your app-specific m68k code.
-
-`main.s` exposes the user firmware as `USERFW equ (ROM4_ADDR + $800)`. When the RP-side terminal command `f` (`[F]irmware`) is selected, the RP writes `CMD_START = 4` to the cartridge sentinel; the m68k's vsync-polled `check_commands` dispatches to `rom_function`, which `jmp`s to `USERFW`. The default `userfw.s` ships with a Cconws demo that prints `Example firmware load...` to the screen — replace the body with your own logic.
-
-Adding more modules follows the same `gemdrive.ld`-style pattern used by `md-drives-emulator`: place each new `.text` section in `userfw.ld`, mirror the offset with an `equ` in `main.s`, and add the `.o` target to `target/atarist/Makefile`.
+Adding an m68k module follows the `gemdrive.ld`-style pattern used by `md-drives-emulator`: give `main.s` less of the 8 KB, place the new `.text` section at a fixed offset in `userfw.ld`, mirror the offset with an `equ` in `inc/sidecart_layout.s`, and add the `.o` target to `target/atarist/Makefile`.
 
 ## License
 

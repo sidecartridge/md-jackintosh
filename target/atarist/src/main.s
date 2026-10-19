@@ -24,30 +24,20 @@
 ; bit 31: TTP
 
 SCREEN_SIZE			equ (-4096)	; Use the memory before the screen memory to store the copied code
-COLS_HIGH			equ 20		; 16 bit columns in the ST
-ROWS_HIGH			equ 200		; 200 rows in the ST
-BYTES_ROW_HIGH		equ 80		; 80 bytes per row in the ST
 PRE_RESET_WAIT		equ $FFFFF
-
-; If 1, the display will not use the framebuffer and will write directly to the
-; display memory. This is useful to reduce the memory usage in the rp2040
-; When not using the framebuffer, the endianness swap must be done in the atari ST
-DISPLAY_BYPASS_FRAMEBUFFER 	equ 1
 
 CMD_NOP				equ 0		; No operation command
 CMD_RESET			equ 1		; Reset command
-CMD_BOOT_GEM		equ 2		; Boot GEM command
-CMD_TERMINAL		equ 3		; Terminal command
-CMD_START			equ 4		; Hand control to the user firmware (USERFW)
 
-_conterm			equ $484	; Conterm device number
+; Asks the RP to reset the ST and start Booster (EMUL_CMD_BOOSTER in
+; rp/src/include/emul.h). No payload.
+CMD_BOOSTER			equ $0002
 
-; App commands for the terminal
-APP_TERMINAL 				equ $0 ; The terminal app
-
-; App terminal commands
-APP_TERMINAL_START   		equ $0 ; Start terminal command
-APP_TERMINAL_KEYSTROKE 		equ $1 ; Keystroke command
+_hz_200				equ $4BA	; The 200 Hz system timer
+BOOT_SCREEN_SECONDS	equ 30		; The boot screen's countdown to Booster
+BOOSTER_RESET_WAIT	equ (3 * 200)	; How long the RP gets to reset the ST, in ticks
+SCREEN_MARGIN_80	equ 20		; The 40-column boot screen, centred on 80 columns
+STATUS_ROW			equ 12		; The boot screen's countdown line
 
 ; The cartridge window's layout and the command channel, shared with every
 ; module that talks to the RP.
@@ -59,65 +49,12 @@ APP_TERMINAL_KEYSTROKE 		equ $1 ; Keystroke command
 
 
 ; Macros
-; XBIOS Vsync wait
-vsync_wait          macro
-					move.w #37,-(sp)
-					trap #14
-					addq.l #2,sp
-                    endm    
-
-; XBIOS GetRez
-; Return the current screen resolution in D0
-get_rez				macro
-					move.w #4,-(sp)
-					trap #14
-					addq.l #2,sp
-					endm
-
 ; XBIOS Get Screen Base
 ; Return the screen memory address in D0
 get_screen_base		macro
 					move.w #2,-(sp)
 					trap #14
 					addq.l #2,sp
-					endm
-
-; Check the left or right shift key. If pressed, exit.
-check_shift_keys	macro
-					move.w #-1, -(sp)			; Read all key status
-					move.w #$b, -(sp)			; BIOS Get shift key status
-					trap #13
-					addq.l #4,sp
-
-					btst #1,d0					; Left shift skip and boot GEM
-					bne boot_gem
-
-					btst #0,d0					; Right shift skip and boot GEM
-					bne boot_gem
-
-					endm
-
-; Check the keys pressed
-check_keys			macro
-
-					gemdos	Cconis,2		; Check if a key is pressed
-					tst.l d0
-					beq .\@no_key
-
-					gemdos	Cnecin,2		; Read the key pressed
-
-					cmp.b #27, d0		; Check if the key is ESC
-					beq .\@esc_key	; If it is, send terminal command
-
-					move.l d0, d3
-					send_sync APP_TERMINAL_KEYSTROKE, 4
-
-					bra .\@no_key
-.\@esc_key:
-					send_sync APP_TERMINAL_START, 0
-
-.\@no_key:
-
 					endm
 
 ; The Mega STE's setting as megaste_take found it, and its word off the stack.
@@ -128,29 +65,6 @@ megaste_hand_back	macro
 					move.b 1(sp), MEGASTE_SPEED_CACHE_REG.w
 .\@megaste_none:
 					addq.l #2, sp
-					endm
-
-check_commands		macro
-					move.l CMD_MAGIC_SENTINEL_ADDR, d6	; Store in the D6 register the remote command value
-					cmp.l #CMD_TERMINAL, d6		; Check if the command is a terminal command
-					bne.s .\@check_reset
-
-					; Check the keys for the terminal emulation
-					check_keys
-					bra .\@bypass
-.\@check_reset:
-					cmp.l #CMD_RESET, d6		; Check if the command is a reset
-					beq .reset					; If it is, reset the computer
-					cmp.l #CMD_BOOT_GEM, d6		; Check if the command is to boot GEM
-					beq boot_gem				; If it is, boot GEM
-					cmp.l #CMD_START, d6		; Check if the command hands over to USERFW
-					beq rom_function			; If it is, jump to the user firmware dispatcher
-
-					; If we are here, the command is a NOP
-					; If the command is a NOP, check the shift keys to bypass the command
-					; check_shift_keys
-					check_keys
-.\@bypass:
 					endm
 
 	section
@@ -177,9 +91,9 @@ first:
     even
 
 pre_auto:
-; On a Mega STE, the cache off until the cartridge hands over: the setup menu
-; talks to the cartridge all along, and with the cache on its commands never
-; reach the RP. The speed stays the user's. The word under the return address
+; On a Mega STE, the cache off until the cartridge hands over: the boot screen
+; talks to the cartridge, and with the cache on its commands never reach the
+; RP. The speed stays the user's. The word under the return address
 ; keeps the setting (megaste_take, megaste_hand_back).
 	clr.w -(sp)
 	bsr megaste_take
@@ -226,95 +140,87 @@ megaste_take:
 	rts
 
 start_rom_code:
-; We assume the screen memory address is in D0 after the get_screen_base call
-	move.l d0, a6				; Save the screen memory address in A6
-
-; Tell the RP the ST has booted, so it starts this session fresh, and then
-; which machine and TOS this is, in shared variables 0 and 1. The senders'
-; Mega STE and 68030 checks read the machine from there. Both wait until the
-; RP answers; the senders keep a6.
+; Tell the RP the ST has booted, and then which machine and TOS this is, in
+; shared variables 0 and 1. The senders' Mega STE and 68030 checks read the
+; machine from there. Both wait until the RP answers.
 .hello:
 	send_sync CMD_ST_HELLO, 0
 	bne.s .hello
 	bsr detect_hw
 	bsr get_tos_version
 
-; Enable bconin to return shift key status
-	or.b #%1000, _conterm.w
+; The boot screen, the cartridge's only job under TOS: it serves the
+; Jackintosh ROMs, which never run this code. X starts Booster, G the GEM
+; desktop, and after BOOT_SCREEN_SECONDS Booster starts on its own. Any other
+; key stops the countdown, and then only X or G leave. GEMDOS keeps d3-d7
+; and a3.
+	move.w #4, -(sp)			; XBIOS Getrez
+	trap #14
+	addq.l #2, sp
+	moveq #0, d7				; d7: the left margin, none on 40 columns
+	tst.w d0
+	beq.s .screen_margin
+	moveq #SCREEN_MARGIN_80, d7
+.screen_margin:
+	pea screen_clear_msg(pc)
+	gemdos Cconws,6
+	lea screen_lines(pc), a3
+	bsr print_lines
+	move.l _hz_200.w, d5
+	add.l #(BOOT_SCREEN_SECONDS * 200), d5	; When Booster starts
+	moveq #-1, d4				; The seconds shown: none yet
+	moveq #0, d6				; The countdown runs
+.countdown:
+	tst.w d6
+	bne.s .countdown_keys		; Stopped: only the keys
+	move.l d5, d3
+	sub.l _hz_200.w, d3			; Ticks left
+	ble.s .to_booster
+	add.l #199, d3
+	divu #200, d3				; Seconds left, rounded up
+	cmp.w d3, d4
+	beq.s .countdown_keys
+	move.w d3, d4
+	bsr print_countdown
+.countdown_keys:
+	gemdos Cconis,2
+	tst.w d0
+	beq.s .countdown
+	gemdos Cnecin,2
+	and.b #$DF, d0				; Upper case
+	cmp.b #'X', d0
+	beq.s .to_booster
+	cmp.b #'G', d0
+	beq.s .to_gem
+	tst.w d6
+	bne.s .countdown			; Already stopped
+	moveq #1, d6
+	lea stopped_line(pc), a3	; Over the countdown's line
+	bsr print_lines
+	bra.s .countdown
+.to_gem:
+	lea gem_line(pc), a3
+	bsr print_lines
+	pea cursor_on_msg(pc)
+	gemdos Cconws,6
+	bra boot_gem
 
-; Get the resolution of the screen
-	get_rez
-	cmp.w #2, d0				; Check if the resolution is 640x400 (high resolution)
-	beq .print_loop_high		; If it is, print the message in high resolution
+; The RP resets the ST through the sentinel once it is ready to start Booster;
+; if it never does, the ST resets anyway.
+.to_booster:
+	lea booster_line(pc), a3
+	bsr print_lines
+.booster_send:
+	send_sync CMD_BOOSTER, 0
+	bne.s .booster_send
+	move.l _hz_200.w, d5
+	add.l #BOOSTER_RESET_WAIT, d5
+.booster_wait:
+	cmp.l #CMD_RESET, CMD_MAGIC_SENTINEL_ADDR
+	beq.s .reset
+	cmp.l _hz_200.w, d5
+	bhi.s .booster_wait
 
-.print_loop_low:
-	vsync_wait
-
-; We must move from the cartridge ROM to the screen memory to display the messages
-	move.l a6, a0				; Set the screen memory address in a0
-	move.l #FRAMEBUFFER_ADDR, a1			; Set the cartridge ROM address in a1
-	move.l #((FRAMEBUFFER_SIZE / 2) -1), d0			; Set the number of words to copy
-.copy_screen_low:
-	move.w (a1)+ , d1			; Copy a word from the cartridge ROM
-	ifne DISPLAY_BYPASS_FRAMEBUFFER == 1
-	rol.w #8, d1				; swap high and low bytes
-	endif
-	move.w d1, d2				; Copy the word to d2
-	swap d2						; Swap the bytes
-	move.w d1, d2				; Copy the word to d2
-	move.l d2, (a0)+			; Copy the word to the screen memory
-	move.l d2, (a0)+			; Copy the word to the screen memory
-	dbf d0, .copy_screen_low    ; Loop until all the message is copied
-
-; Check the different commands and the keyboard
-	check_commands
-
-	bra .print_loop_low		; Continue printing the message
-
-.print_loop_high:
-	vsync_wait
-
-; We must move from the cartridge ROM to the screen memory to display the messages
-	move.l a6, a1				; Set the screen memory address in a1
-	move.l a6, a2
-	lea BYTES_ROW_HIGH(a2), a2	; Move to the next line in the screen
-	move.l #FRAMEBUFFER_ADDR, a0		; Set the cartridge ROM address in a0
-	move.l #TRANSTABLE, a3		; Set the translation table in a3
-	move.l #(ROWS_HIGH -1), d0	; Set the number of rows to copy - 1
-.copy_screen_row_high:
-	move.l #(COLS_HIGH -1), d1	; Set the number of columns to copy - 1 
-.copy_screen_col_high:
-	move.w (a0)+ , d2			; Copy a word from the cartridge ROM
-
-	ifne DISPLAY_BYPASS_FRAMEBUFFER == 1
-	rol.w #8, d2				; swap high and low bytes
-	endif
-
-	move.w d2, d3				; Copy the word to d3
-	and.w #$FF00, d3			; Mask the high byte
-	lsr.w #7, d3				; Shift the high byte 7 bits to the right
-	move.w (a3, d3.w), d4		; Translate the high byte
-	swap d4						; Swap the words
-
-	and.w #$00FF, d2			; Mask the low byte
-	add.w d2, d2				; Double the low byte
-	move.w (a3, d2.w), d4		; Translate the low byte
-
-	move.l d4, (a1)+			; Copy the word to the screen memory
-	move.l d4, (a2)+			; Copy the word to the screen memory
-
-	dbf d1, .copy_screen_col_high   ; Loop until all the message is copied
-
-	lea BYTES_ROW_HIGH(a1), a1	; Move to the next line in the screen
-	lea BYTES_ROW_HIGH(a2), a2	; Move to the next line in the screen
-
-	dbf d0, .copy_screen_row_high   ; Loop until all the message is copied
-
-; Check the different commands and the keyboard
-	check_commands
-
-	bra .print_loop_high		; Continue printing the message
-	
 .reset:
     move.l #PRE_RESET_WAIT, d6
 .wait_me:
@@ -333,20 +239,109 @@ boot_gem:
 	megaste_hand_back
     rts
 
-; Dispatcher for the user firmware module. Reached on CMD_START via the
-; sentinel poll in check_commands. The cartridge image places userfw.s
-; at offset $0800 (USERFW = $FA0800) through target/atarist/src/userfw.ld;
-; main.s simply hands control over with a one-way jmp. Apps that want
-; to chain multiple modules can change this to a sequence of jsr / jmp
-; the same way md-drives-emulator's rom_function dispatches into
-; GEMDRIVE/FLOPPYEMUL/ACSIEMUL/RTCEMUL.
-rom_function:
-	; The user firmware's rts goes back to TOS, so the Mega STE's word comes
-	; off the stack first and the user's cache setting is back. Code there
-	; that talks to the cartridge turns the cache off around each send
-	; (megaste_cache_off / megaste_cache_back in inc/sidecart_macros.s).
-	megaste_hand_back
-    jmp USERFW
+; Print the seconds left, d4.w, over the ones shown before.
+print_countdown:
+	lea countdown_line(pc), a3
+	bsr print_lines
+	moveq #0, d3
+	move.w d4, d3
+	divu #10, d3				; Tens in the low word, units in the high word
+	moveq #' ', d0
+	tst.w d3
+	beq.s .print_countdown_tens
+	moveq #'0', d0
+	add.w d3, d0
+.print_countdown_tens:
+	bsr print_char
+	swap d3
+	moveq #'0', d0
+	add.w d3, d0
+	bsr print_char
+	pea seconds_msg(pc)
+	gemdos Cconws,6
+	rts
+
+; Print the lines of the table at a3: each is a row, a column and a text
+; ending in 0, and the table ends with a row of $FF. The column moves right by
+; the margin in d7.
+print_lines:
+	move.b (a3)+, d0
+	cmp.b #$FF, d0
+	beq.s .print_lines_done
+	move.b (a3)+, d1
+	bsr goto_row_col
+	move.l a3, -(sp)
+	move.w #Cconws, -(sp)
+	trap #1
+	addq.l #6, sp
+.print_lines_skip:
+	tst.b (a3)+
+	bne.s .print_lines_skip
+	bra.s print_lines
+.print_lines_done:
+	rts
+
+; Move the cursor to row d0.b, column d1.b plus the margin: VT52 ESC Y.
+goto_row_col:
+	movem.l d3-d4, -(sp)
+	move.b d0, d3
+	move.b d1, d4
+	moveq #27, d0
+	bsr print_char
+	moveq #'Y', d0
+	bsr print_char
+	moveq #32, d0
+	add.b d3, d0
+	bsr print_char
+	moveq #32, d0
+	add.b d4, d0
+	add.b d7, d0
+	bsr print_char
+	movem.l (sp)+, d3-d4
+	rts
+
+; Print the character in d0.w.
+print_char:
+	move.w d0, -(sp)
+	move.w #Cconout, -(sp)
+	trap #1
+	addq.l #4, sp
+	rts
+
+screen_clear_msg:
+	dc.b 27,"E",27,"f",0			; Clear the screen, cursor off
+cursor_on_msg:
+	dc.b 27,"e",0
+; Row, column, text (see print_lines). 40 columns wide.
+screen_lines:
+	dc.b 0,0,27,"p"," SidecarTridge Multi-device             ",27,"q",0
+	dc.b 2,2,"JACKINTOSH "
+	include version.inc			; The version, written by the Makefile
+	ifne _DEBUG
+	dc.b " (debug build)"
+	endif
+	dc.b 0
+	dc.b 4,2,"This cartridge works with the",0
+	dc.b 5,2,"Jackintosh ROMs, which turn this",0
+	dc.b 6,2,"Atari into a Macintosh Plus.",0
+	dc.b 8,2,"[X]  Back to Booster",0
+	dc.b 9,2,"[G]  Continue to the GEM desktop",0
+	dc.b 10,2,"Any other key stops the countdown.",0
+	dc.b 15,2,"Open jackintosh.sidecartridge.com",0
+	dc.b 16,2,"to learn more.",0
+	dc.b 24,8,"(C)2026 GOODDATA LABS SL",0
+	dc.b $FF
+countdown_line:
+	dc.b STATUS_ROW,2,27,"K","Booster starts in ",0,$FF
+seconds_msg:
+	dc.b " s",0
+stopped_line:
+	dc.b STATUS_ROW,2,27,"K","Countdown stopped: press X or G",0,$FF
+booster_line:
+	dc.b STATUS_ROW,2,27,"K","Starting Booster...",0,$FF
+gem_line:
+	dc.b STATUS_ROW,2,27,"K","Starting the GEM desktop...",0,$FF
+	even
 
 ; Shared functions included at the end of the file
 ; Don't forget to include the macros for the shared functions at the top of file

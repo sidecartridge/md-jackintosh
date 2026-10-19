@@ -19,15 +19,7 @@
   justified: true
 
 # Ignore more libraries
-- src: "rp/src/httpc/*"
-  reason: "Third-party code, not part of the project."
-  justified: true
-
 - src: "rp/src/settings/*"
-  reason: "Third-party code, not part of the project."
-  justified: true
-
-- src: "rp/src/ug82/*"
   reason: "Third-party code, not part of the project."
   justified: true
 

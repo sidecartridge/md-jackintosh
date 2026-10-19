@@ -28,9 +28,7 @@
         "**/pico-sdk": true,
         "**/pico-extras": true,
         "**/dist": true,
-        "**/rp/src/httpc": true,
         "**/rp/src/settings": true,
-        "**/rp/src/ug82": true,
         "**/rp/build": true,
         "**/target": true
     },
