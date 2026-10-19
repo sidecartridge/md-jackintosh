@@ -1,10 +1,13 @@
 {
   "uuid": "<APP_UUID>",
-  "name": "APP DEV Template",
-  "description": "Microfirmware Application Template for Atari ST",
-  "image": "https://placehold.co/256x256/png",
+  "name": "Jackintosh Multidrive Emulation",
+  "description": "Floppy and hard disk images, the clock and the PRAM for the Jackintosh ROMs, which turn an Atari ST/STE/MegaST/MegaSTE into a Macintosh Plus. Put the images in /jackintosh on the microSD card as FD0, FD1 and HD0. <a target='_blank' rel='noopener noreferrer' href='https://jackintosh.sidecartridge.com'>Learn more</a>",
+  "image": "https://raw.githubusercontent.com/sidecartridge/md-jackintosh/main/icon.png",
   "tags": [
-    "Sample"
+    "Jackintosh",
+    "Macintosh",
+    "Emulation",
+    "Disks"
   ],
   "devices": [
     "ST",

@@ -78,6 +78,7 @@ static uint32_t commandLogLost = 0;
 #endif
 
 static bool cardMounted = false;
+static bool cardActivity = false;  // since macdisk_consumeCardActivity()
 static char mountFolder[SETTINGS_MAX_VALUE_LENGTH];
 static char pramPath[SETTINGS_MAX_VALUE_LENGTH + sizeof(MACDISK_PRAM_FILE) + 1];
 static FIL pramFile;
@@ -395,12 +396,18 @@ static int32_t macdisk_writePram(const uint16_t *data, uint32_t dataBytes) {
 void macdisk_init(void) {
   WRITE_AND_SWAP_LONGWORD(macdisk_windowBase(), MACDISK_ID_OFFSET,
                           (uint32_t)MACDISK_ID);
+  macdisk_setCardStatus(MACDISK_CARD_PENDING);
+}
+
+void macdisk_setCardStatus(uint32_t status) {
+  WRITE_AND_SWAP_LONGWORD(macdisk_windowBase(), MACDISK_CARD_OFFSET, status);
 }
 
 void macdisk_mountAll(const char *folder) {
   snprintf(mountFolder, sizeof(mountFolder), "%s", folder);
   snprintf(pramPath, sizeof(pramPath), "%s/%s", folder, MACDISK_PRAM_FILE);
   cardMounted = true;
+  macdisk_setCardStatus(MACDISK_CARD_OK);
   for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) {
     macdisk_mountUnit(unit, folder);
   }
@@ -477,6 +484,7 @@ void macdisk_commandCb(TransmissionProtocol *protocol, uint16_t *payloadPtr) {
   }
   WRITE_AND_SWAP_LONGWORD(macdisk_windowBase(), MACDISK_RESULT_OFFSET,
                           (uint32_t)result);
+  if (protocol->command_id != MACDISK_CMD_TIME) cardActivity = true;
 #if defined(_DEBUG) && (_DEBUG != 0)
   if (commandLogHead - commandLogTail < MACDISK_LOG_ENTRIES) {
     MacdiskLogEntry *e = &commandLog[commandLogHead % MACDISK_LOG_ENTRIES];
@@ -491,6 +499,12 @@ void macdisk_commandCb(TransmissionProtocol *protocol, uint16_t *payloadPtr) {
     commandLogLost++;
   }
 #endif
+}
+
+bool macdisk_consumeCardActivity(void) {
+  bool was = cardActivity;
+  cardActivity = false;
+  return was;
 }
 
 void macdisk_printAnswered(void) {

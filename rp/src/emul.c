@@ -12,6 +12,7 @@
 
 // inclusw in the C file to avoid multiple definitions
 #include "aconfig.h"
+#include "blink.h"
 #include "chandler.h"
 #include "commemul.h"
 #include "constants.h"
@@ -109,6 +110,45 @@ static void __not_in_flash_func(emul_pollTick)(void) {
   chandler_loop();
   emul_serveStBoot();
   select_poll();
+}
+
+// Reset the ST and start Booster: what the boot screen asked for.
+static void emul_toBooster(void) {
+  emul_serviceFor(SLEEP_LOOP_MS);
+  // Hold the reset long enough for the boot screen to see it, and keep
+  // answering: a command in flight would otherwise keep the ST in its send,
+  // retrying, until the hold was over.
+  DPRINTF("Sending command: %08x\n", EMUL_SENTINEL_RESET);
+  WRITE_AND_SWAP_LONGWORD((uint8_t *)&__rom_in_ram_start__,
+                          CHANDLER_CMD_SENTINEL_OFFSET, EMUL_SENTINEL_RESET);
+  emul_serviceFor(SENTINEL_HOLD_MS);
+
+  // Before jumping to the booster app, let's clean the settings
+  // Set emulation mode to 255 (setup menu)
+  settings_put_integer(aconfig_getContext(), ACONFIG_PARAM_MODE,
+                       APP_MODE_SETUP);
+  settings_save(aconfig_getContext(), true);
+
+  // Jump to the booster app
+  DPRINTF("Jumping to the booster app...\n");
+  reset_jump_to_booster();
+}
+
+// No usable microSD card: nothing else starts. The ST is still answered, so
+// the Jackintosh ROM reads why at MACDISK_CARD_OFFSET (every disk command
+// answers no medium) and the TOS boot screen still works, and the LED blinks
+// until the RP restarts: power, or a short SELECT press once a card is in.
+static void emul_serveCardError(void) {
+  devhooks_setAppHandler(emul_devhooksApp);
+  while (keepActive) {
+    devhooks_poll();
+    select_poll();
+    chandler_loop();
+#ifdef BLINK_H
+    blink_toogle();
+#endif
+  }
+  emul_toBooster();
 }
 
 // The cartridge's boot screen under TOS (target/atarist/src/main.s) asks for
@@ -255,8 +295,13 @@ void emul_start() {
   }
   int sdcardErr = sdcard_initFilesystem(&fsys, folderName);
   if (sdcardErr != SDCARD_INIT_OK) {
-    DPRINTF("SD card unavailable (error %i). Continuing without SD.\n",
-            sdcardErr);
+    DPRINTF("SD card unavailable (error %i): stopping here.\n", sdcardErr);
+    macdisk_setCardStatus(
+        sdcardErr == SDCARD_MOUNT_ERROR           ? MACDISK_CARD_UNREADABLE
+        : sdcardErr == SDCARD_CREATE_FOLDER_ERROR ? MACDISK_CARD_NO_FOLDER
+                                                  : MACDISK_CARD_NONE);
+    emul_serveCardError();
+    return;
   } else {
     DPRINTF("SD card found & initialized\n");
     macdisk_mountAll(folderName);
@@ -317,9 +362,10 @@ void emul_start() {
     }
   }
 
-  // Blink on
+  // The LED starts off and pulses on for every card access, as in
+  // md-drives-emulator.
 #ifdef BLINK_H
-  blink_on();
+  blink_off();
 #endif
 
   // 7. Start the main loop
@@ -337,6 +383,11 @@ void emul_start() {
     // every pass: the ST spins on its answer, so the loop never waits.
     chandler_loop();
     emul_serveStBoot();
+#ifdef BLINK_H
+    // After the answer: on a Pico W every LED write goes to the Wi-Fi chip.
+    if (macdisk_consumeCardActivity()) blink_activityPulse();
+    blink_poll();
+#endif
     macdisk_printAnswered();
     macdisk_syncPending();
     devdisktest_poll(folderName);
@@ -354,22 +405,5 @@ void emul_start() {
   }
 
   // 8. Reset the ST and start Booster
-  emul_serviceFor(SLEEP_LOOP_MS);
-  // Hold the reset long enough for the boot screen to see it, and keep
-  // answering: a command in flight would otherwise keep the ST in its send,
-  // retrying, until the hold was over.
-  DPRINTF("Sending command: %08x\n", EMUL_SENTINEL_RESET);
-  WRITE_AND_SWAP_LONGWORD((uint8_t *)&__rom_in_ram_start__,
-                          CHANDLER_CMD_SENTINEL_OFFSET, EMUL_SENTINEL_RESET);
-  emul_serviceFor(SENTINEL_HOLD_MS);
-
-  // Before jumping to the booster app, let's clean the settings
-  // Set emulation mode to 255 (setup menu)
-  settings_put_integer(aconfig_getContext(), ACONFIG_PARAM_MODE,
-                       APP_MODE_SETUP);
-  settings_save(aconfig_getContext(), true);
-
-  // Jump to the booster app
-  DPRINTF("Jumping to the booster app...\n");
-  reset_jump_to_booster();
+  emul_toBooster();
 }

@@ -106,6 +106,12 @@
 #define MACDISK_UNIT_OFFSET(unit) \
   (MACDISK_UNIT_TABLE_OFFSET + (unit) * MACDISK_UNIT_ENTRY_SIZE)
 
+// The microSD card, MACDISK_CARD_*, from the RP's boot on. Anything but
+// MACDISK_CARD_OK means the firmware stopped there: no disks and no network,
+// the LED blinking, until the RP restarts (power, or a short SELECT press).
+// Every disk and PRAM command then answers MACDISK_ERR_NOMEDIUM.
+#define MACDISK_CARD_OFFSET (MACDISK_STATUS_OFFSET + 0x40)
+
 // Sector data, in the order the 68000 reads it.
 #define MACDISK_BUFFER_OFFSET (MACDISK_STATUS_OFFSET + 0x100)
 #define MACDISK_BUFFER_SIZE (MACDISK_MAX_READ_SECTORS * MACDISK_SECTOR_SIZE)
@@ -115,6 +121,12 @@
 #define MACDISK_ID ((MACDISK_ID_MAGIC << 16) | MACDISK_ID_VERSION)
 
 #define MACDISK_TIME_FLAG_VALID 0x1  // the time is from an NTP server
+
+#define MACDISK_CARD_OK 0
+#define MACDISK_CARD_NONE 1        // no card, or one that does not answer
+#define MACDISK_CARD_UNREADABLE 2  // no FAT or exFAT file system on it
+#define MACDISK_CARD_NO_FOLDER 3   // the app folder cannot be created
+#define MACDISK_CARD_PENDING 4     // not tried yet: wait for one of the above
 
 #define MACDISK_FLAG_INSERTED 0x1
 #define MACDISK_FLAG_READONLY 0x2
@@ -141,6 +153,14 @@
  * @brief Publish the identity, before the first command is answered.
  */
 void macdisk_init(void);
+
+/**
+ * @brief Publish the card's state at MACDISK_CARD_OFFSET (MACDISK_CARD_*).
+ *
+ * macdisk_init() publishes MACDISK_CARD_PENDING and macdisk_mountAll()
+ * MACDISK_CARD_OK; the app publishes why a card could not be used.
+ */
+void macdisk_setCardStatus(uint32_t status);
 
 /**
  * @brief Mount the images of every unit from the app folder.
@@ -183,6 +203,13 @@ void macdisk_syncPending(void);
  * them, so the answer is not delayed. Release builds print nothing.
  */
 void macdisk_printAnswered(void);
+
+/**
+ * @brief True once after the card was read or written for the Mac.
+ *
+ * For the activity LED, which the main loop pulses after the answer.
+ */
+bool macdisk_consumeCardActivity(void);
 
 /**
  * @brief Command callback for chandler_addCB().

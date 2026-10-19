@@ -32,6 +32,14 @@ and a Restart comes back to the Finder.
   X goes to Booster, G to the GEM desktop, after 30 s Booster starts on
   its own, and any other key stops the countdown. The version comes from
   `version.txt`.
+- **No usable microSD card, no service**: without a card, with no FAT or
+  exFAT file system on it, or when the app folder cannot be created,
+  nothing else starts (no Wi-Fi, no disks). The LED blinks every 700 ms
+  until the RP restarts, the ST is still answered, and the reason is in
+  the status block at `$FA2340` (0 OK, 1 no card, 2 no file system, 3 no
+  folder, 4 not tried yet) for the ROMs to show.
+- **The activity LED**: off when idle, on for 25 ms after every access to
+  the card for the Mac, as in md-drives-emulator.
 - **The disk self-test** (`rp/src/devdisktest.c`, debug builds): on the
   device, it creates its own floppy and hard disk images on the card,
   reads and writes them through the Mac's commands and checks every byte;
@@ -48,6 +56,10 @@ and a Restart comes back to the Finder.
   loaded.
 - The cartridge image is `main.s` alone, with the whole 8 KB.
 - The debug mailbox holds 520 payload words, one full disk write.
+- A missing card is told from a card with no file system: with card detect
+  off it fails the mount as not ready (`sdcard.c`).
+- The app descriptor and its icon (`desc/app.json`, `icon.png`): Jackintosh
+  Multidrive Emulation, for the ST, STE, Mega ST and Mega STE.
 
 ### Removed
 

@@ -96,7 +96,10 @@ sdcard_status_t sdcard_initFilesystem(FATFS *fsPtr, const char *folderName) {
   fres = sdcard_mountFilesystem(fsPtr, "0:");
   if (fres != FR_OK) {
     DPRINTF("Error mounting the filesystem.\n");
-    return SDCARD_MOUNT_ERROR;
+    // With card detect off the init above succeeds with no card at all, so a
+    // card that is missing or does not answer fails here, not ready. Only a
+    // card with no file system on it is a mount error.
+    return (fres == FR_NO_FILESYSTEM) ? SDCARD_MOUNT_ERROR : SDCARD_INIT_ERROR;
   }
   DPRINTF("Filesystem mounted.\n");
 
