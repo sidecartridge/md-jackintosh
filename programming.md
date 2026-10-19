@@ -145,7 +145,7 @@ every sector through `macdisk_commandCb()`, and puts the card's own images back.
 | `RTC_ENABLED` | `true` | The time of day from NTP, and the Wi-Fi with it |
 | `RTC_NTP_HOST` | `pool.ntp.org` | The NTP server |
 | `RTC_NTP_PORT` | `123` | Its port |
-| `ROM_OPTION_0` … `ROM_OPTION_9` | `""` | The Jackintosh ROMs' options, kept for them and never read here |
+| `ROM_OPTION_0` … `ROM_OPTION_9` | `""` | The Jackintosh ROMs' options, kept for them and never read here. Today the ROMs use 0 for the menu's countdown, 1 for the Mac's RAM, 2 for the right mouse button and 3 for the screen; "" means their default |
 
 Never remove an entry from `defaultEntries` and add new ones only at the end: the loader reads
 only as many stored entries as there are defaults. The app's 4 KB settings sector holds 32 entries

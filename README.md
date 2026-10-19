@@ -64,7 +64,8 @@ burn them into EPROMs or EEPROMs.
 ## Usage
 
 Every time your Atari boots with the Jackintosh ROMs, they show the **Jackintosh menu** for 20
-seconds. If no key is pressed, the Mac boots from the disks chosen in it. Any key stops the
+seconds (or what the menu's **[C]ountdown** option says). If no key is pressed, the Mac boots
+from the disks chosen in it. Any key stops the
 countdown; **`E`** then boots.
 
 On first use, the microfirmware creates the folder **`/jackintosh`** on the microSD card if it
@@ -121,9 +122,19 @@ disk mounted that is not the one chosen.
 
 ### Emulation options
 
-The menu's **[O]ptions** page sets the Jackintosh ROMs' own options, such as the menu's countdown,
-the Mac's memory, the right mouse button, the screen and the keyboard layout. The Multi-device
-keeps them in its flash with the other choices; the ROMs read them before the Mac starts.
+**[O]ptions** in the menu opens a page of the Jackintosh ROMs' own options. Each key steps its
+option to the next value, and the options apply from this boot on. **`SPACE`** or **`ESC`** goes
+back to the main menu.
+
+| Option | Values |
+|--------|--------|
+| **[C]ountdown at boot** | 30, 20 (the default), 10 or 5 seconds |
+| **[M]ac RAM** | All of it (the default), 1024, 2048 or 2560 KB |
+| **[R]ight mouse button** | Off (the default), Command-click or double-click |
+| **[S]creen** | 640x400 (the default), or the Plus's 512x342, centred |
+
+The Multi-device keeps them in its flash with the other choices, so they survive power cycles;
+the ROMs read them before the Mac starts.
 
 ### Browsing the microSD card
 

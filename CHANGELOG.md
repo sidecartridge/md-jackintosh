@@ -35,7 +35,8 @@ installs from five floppies stepped with SELECT, and Tetris runs.
   GET_SETTINGS `$0707` and SET_SETTING `$0708` read and write the app
   folder, FD0's ten slots, FD1 and HD0 in the app settings, and ten
   option slots the ROMs keep for their own emulation options (printable
-  ASCII, at most 15 bytes, after an "OPT1" marker). A SET is
+  ASCII, at most 15 bytes, after an "OPT1" marker): the menu's countdown,
+  the Mac's RAM, the right mouse button and the screen. A SET is
   checked (inside the app folder, a file for an image, a folder for the
   app folder), saved at once, and swaps the unit's image before the
   answer. In a Mac session a short SELECT press puts FD0's next slot in
