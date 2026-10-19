@@ -95,20 +95,24 @@
 // MACDISK_KEY_HD0, in order) its path in MACDISK_PATH_SIZE bytes, "" for
 // none; then FD0's current slot as a long (MACDISK_SETTINGS_FD0_SLOT_OFFSET);
 // then the RTC keys' values, MACDISK_PATH_SIZE bytes each, from
-// MACDISK_SETTINGS_RTC_OFFSET. Answered without a card too: the settings are
-// in the RP's flash.
+// MACDISK_SETTINGS_RTC_OFFSET; then MACDISK_OPTIONS_MAGIC as a long at
+// MACDISK_SETTINGS_OPTIONS_OFFSET and the ROM options' values,
+// MACDISK_OPTION_SIZE bytes each, from MACDISK_SETTINGS_OPTION_FIELDS.
+// Answered without a card too: the settings are in the RP's flash.
 #define MACDISK_CMD_GET_SETTINGS ((APP_MACDISK << 8) | 0x07)
-// d3 = the key (MACDISK_KEY_*), d4, d5 unused (0), then the path, or an RTC
-// key's value (send_write_sync); "" empties an image key. Checked first:
-// FOLDER must be a folder, any other path key a file, inside FOLDER (FOLDER
-// inside "/"); an RTC key's value as MACDISK_KEY_RTC_* says. Otherwise
-// MACDISK_ERR_PARAM and nothing changes. Then saved to the settings flash,
-// and for FD0's current slot, FD1 and HD0 the unit's image is swapped before
-// the answer: the old one synced and closed, the new one opened (its changes
-// count moves); "" leaves the unit empty. MACDISK_OK says it was saved; the
-// unit table says what the unit holds. FOLDER is the top of LIST and of these
-// checks at once, PRAM.BIN's folder from the RP's next power-on. The RTC keys
-// apply from the RP's next start (power-on or restart).
+// d3 = the key (MACDISK_KEY_*), d4, d5 unused (0), then the path, or the
+// value of an RTC key or a ROM option (send_write_sync); "" empties an image
+// key. Checked first: FOLDER must be a folder, any other path key a file,
+// inside FOLDER (FOLDER inside "/"); an RTC key's value as MACDISK_KEY_RTC_*
+// says; a ROM option at most MACDISK_OPTION_SIZE - 1 bytes of printable ASCII
+// ($20-$7E). Otherwise MACDISK_ERR_PARAM and nothing changes. Then saved to the
+// settings flash, and for FD0's current slot, FD1 and HD0 the unit's image is
+// swapped before the answer: the old one synced and closed, the new one opened
+// (its changes count moves); "" leaves the unit empty. MACDISK_OK says it was
+// saved; the unit table says what the unit holds. FOLDER is the top of LIST and
+// of these checks at once, PRAM.BIN's folder from the RP's next power-on. The
+// RTC keys apply from the RP's next start (power-on or restart). The ROM
+// options are the Jackintosh ROMs' own: kept and given back, never read here.
 // MACDISK_ERR_NOMEDIUM without a card, and nothing is saved.
 #define MACDISK_CMD_SET_SETTING ((APP_MACDISK << 8) | 0x08)
 
@@ -143,12 +147,24 @@
 // is "pool.ntp.org".
 #define MACDISK_KEY_NTP_HOST 14
 #define MACDISK_KEY_NTP_PORT 15  // 1 to 65535 in decimal; the default is "123"
-#define MACDISK_KEYS 16
+#define MACDISK_RTC_KEYS 3
+// The Jackintosh ROMs' options, n = 0 to MACDISK_OPTIONS - 1: printable ASCII,
+// "" by default (the ROMs then use their own default). Ten, because the
+// settings sector holds 31 settings and the other keys take 17.
+#define MACDISK_KEY_OPTION(n) (16 + (n))
+#define MACDISK_OPTIONS 10
+#define MACDISK_OPTION_SIZE 16  // a value and its NUL
+#define MACDISK_KEYS 26
 #define MACDISK_SETTINGS_FD0_SLOT_OFFSET (MACDISK_PATH_KEYS * MACDISK_PATH_SIZE)
 #define MACDISK_SETTINGS_RTC_OFFSET (MACDISK_SETTINGS_FD0_SLOT_OFFSET + 4)
-#define MACDISK_SETTINGS_SIZE    \
-  (MACDISK_SETTINGS_RTC_OFFSET + \
-   (MACDISK_KEYS - MACDISK_PATH_KEYS) * MACDISK_PATH_SIZE)
+#define MACDISK_SETTINGS_OPTIONS_OFFSET \
+  (MACDISK_SETTINGS_RTC_OFFSET + MACDISK_RTC_KEYS * MACDISK_PATH_SIZE)
+// "OPT1": the ROM options follow. Older firmware leaves whatever the buffer
+// held here.
+#define MACDISK_OPTIONS_MAGIC 0x4F505431
+#define MACDISK_SETTINGS_OPTION_FIELDS (MACDISK_SETTINGS_OPTIONS_OFFSET + 4)
+#define MACDISK_SETTINGS_SIZE \
+  (MACDISK_SETTINGS_OPTION_FIELDS + MACDISK_OPTIONS * MACDISK_OPTION_SIZE)
 
 // LIST's answer: three longs, then the entries.
 #define MACDISK_LIST_MAX 256       // entries in a listing, ".." included

@@ -63,7 +63,12 @@ static const char *const settingKeys[MACDISK_KEYS] = {
     ACONFIG_PARAM_FD0_8,        ACONFIG_PARAM_FD0_9,
     ACONFIG_PARAM_FD0_10,       ACONFIG_PARAM_FD1,
     ACONFIG_PARAM_HD0,          ACONFIG_PARAM_RTC_ENABLED,
-    ACONFIG_PARAM_RTC_NTP_HOST, ACONFIG_PARAM_RTC_NTP_PORT};
+    ACONFIG_PARAM_RTC_NTP_HOST, ACONFIG_PARAM_RTC_NTP_PORT,
+    ACONFIG_PARAM_ROM_OPTION_0, ACONFIG_PARAM_ROM_OPTION_1,
+    ACONFIG_PARAM_ROM_OPTION_2, ACONFIG_PARAM_ROM_OPTION_3,
+    ACONFIG_PARAM_ROM_OPTION_4, ACONFIG_PARAM_ROM_OPTION_5,
+    ACONFIG_PARAM_ROM_OPTION_6, ACONFIG_PARAM_ROM_OPTION_7,
+    ACONFIG_PARAM_ROM_OPTION_8, ACONFIG_PARAM_ROM_OPTION_9};
 static uint8_t fd0Slot = 1;  // FD0's current slot
 
 // LIST's last listing. It takes 26 KB, so it is allocated by the first LIST,
@@ -633,15 +638,25 @@ static int32_t macdisk_list(uint32_t first, uint32_t options,
 static int32_t macdisk_getSettings(void) {
   uint8_t *out = macdisk_windowBase() + MACDISK_BUFFER_OFFSET;
   for (uint8_t key = 0; key < MACDISK_KEYS; key++) {
-    uint32_t offset = (key < MACDISK_PATH_KEYS)
-                          ? key * MACDISK_PATH_SIZE
-                          : MACDISK_SETTINGS_RTC_OFFSET +
-                                (key - MACDISK_PATH_KEYS) * MACDISK_PATH_SIZE;
+    uint32_t offset;
+    uint32_t size = MACDISK_PATH_SIZE;
+    if (key < MACDISK_PATH_KEYS) {
+      offset = key * MACDISK_PATH_SIZE;
+    } else if (key < MACDISK_KEY_OPTION(0)) {
+      offset = MACDISK_SETTINGS_RTC_OFFSET +
+               (key - MACDISK_PATH_KEYS) * MACDISK_PATH_SIZE;
+    } else {
+      offset = MACDISK_SETTINGS_OPTION_FIELDS +
+               (key - MACDISK_KEY_OPTION(0)) * MACDISK_OPTION_SIZE;
+      size = MACDISK_OPTION_SIZE;
+    }
     char *field = (char *)out + offset;
-    memset(field, 0, MACDISK_PATH_SIZE);
-    strncpy(field, macdisk_setting(key), MACDISK_PATH_SIZE - 1);
+    memset(field, 0, size);
+    strncpy(field, macdisk_setting(key), size - 1);
   }
   macdisk_writeBe32(out + MACDISK_SETTINGS_FD0_SLOT_OFFSET, fd0Slot);
+  macdisk_writeBe32(out + MACDISK_SETTINGS_OPTIONS_OFFSET,
+                    MACDISK_OPTIONS_MAGIC);
   CHANGE_ENDIANESS_BLOCK16(out, MACDISK_SETTINGS_SIZE);
   return MACDISK_OK;
 }
@@ -662,6 +677,16 @@ static bool macdisk_checkRtcValue(uint32_t key, const char *value) {
   return port >= 1 && port <= 65535;
 }
 
+// A ROM option: printable ASCII, short enough for its field.
+static bool macdisk_checkOptionValue(const char *value) {
+  size_t len = strlen(value);
+  if (len >= MACDISK_OPTION_SIZE) return false;
+  for (size_t i = 0; i < len; i++) {
+    if ((uint8_t)value[i] < 0x20 || (uint8_t)value[i] > 0x7E) return false;
+  }
+  return true;
+}
+
 // Stored with the type of its default, as md-drives-emulator stores them.
 static int macdisk_putSetting(uint32_t key, const char *value) {
   SettingsContext *ctx = aconfig_getContext();
@@ -678,9 +703,11 @@ static int32_t macdisk_setSetting(uint32_t key, const uint16_t *data,
                                   uint32_t dataBytes) {
   if (key >= MACDISK_KEYS) return MACDISK_ERR_PARAM;
   if (!cardMounted) return MACDISK_ERR_NOMEDIUM;
-  // The path, or an RTC key's value.
+  // The path, or the value of an RTC key or a ROM option.
   if (!macdisk_takePath(data, dataBytes)) return MACDISK_ERR_PARAM;
-  if (key >= MACDISK_PATH_KEYS) {
+  if (key >= MACDISK_KEY_OPTION(0)) {
+    if (!macdisk_checkOptionValue(requestPath)) return MACDISK_ERR_PARAM;
+  } else if (key >= MACDISK_PATH_KEYS) {
     if (!macdisk_checkRtcValue(key, requestPath)) return MACDISK_ERR_PARAM;
   } else if (key == MACDISK_KEY_FOLDER) {
     if (!macdisk_checkPath(requestPath)) return MACDISK_ERR_PARAM;

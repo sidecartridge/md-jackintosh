@@ -145,9 +145,12 @@ every sector through `macdisk_commandCb()`, and puts the card's own images back.
 | `RTC_ENABLED` | `true` | The time of day from NTP, and the Wi-Fi with it |
 | `RTC_NTP_HOST` | `pool.ntp.org` | The NTP server |
 | `RTC_NTP_PORT` | `123` | Its port |
+| `ROM_OPTION_0` … `ROM_OPTION_9` | `""` | The Jackintosh ROMs' options, kept for them and never read here |
 
 Never remove an entry from `defaultEntries` and add new ones only at the end: the loader reads
-only as many stored entries as there are defaults. `ACONFIG_VERSION_NUMBER` is 2 while
+only as many stored entries as there are defaults. The app's 4 KB settings sector holds 32 entries
+of 127 bytes, one of them the version: 31 settings, of which these take 27. `settings_init()`
+refuses a default table that does not fit, and the app then drops to Booster. `ACONFIG_VERSION_NUMBER` is 2 while
 developing, so settings saved under the shared development UUID by the template build are not
 loaded; it goes back to 1 with the app's own UUID, before the release.
 
@@ -239,8 +242,8 @@ ROMs send app `$07` (the first app number no other SidecarTridge firmware uses):
 | `$0704` | PRAM_READ | Copies `PRAM.BIN` (256 bytes) into the buffer |
 | `$0705` | PRAM_WRITE | 256 bytes of data: rewrites `PRAM.BIN` in place, synced before the answer |
 | `$0706` | LIST | d3 = first entry, d4 = `MACDISK_LIST_WHOLE_CARD` or 0, then a folder's path |
-| `$0707` | GET_SETTINGS | The 13 paths, FD0's current slot and the RTC settings into the buffer |
-| `$0708` | SET_SETTING | d3 = key (`MACDISK_KEY_*`), then a path or an RTC value |
+| `$0707` | GET_SETTINGS | The 13 paths, FD0's current slot, the RTC settings, the "OPT1" marker and the ten ROM options into the buffer |
+| `$0708` | SET_SETTING | d3 = key (`MACDISK_KEY_*`), then a path, an RTC value or a ROM option |
 
 The cartridge's boot screen sends `$0002` (`EMUL_CMD_BOOSTER`, no payload). `$FF01`
 (`CMD_ST_HELLO`) and `$FF00` (`CMD_SET_SHARED_VAR`) are the template's own, answered by chandler

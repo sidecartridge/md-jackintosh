@@ -266,11 +266,13 @@ python3 tools/dev/disktest_harness.py                        # the disk self-tes
   rewrites two sectors of HD0, writes them again as a retry would, and puts them back. `--eject
   UNIT` empties a unit until the next ST boot mounts it again. `--pram` rewrites `PRAM.BIN`
   and puts it back (as zeros if there was none). TIME checks the clock against this computer's
-  once NTP has answered. GET reads the chooser's settings, the RTC's three included; LIST reads every page of `FOLDER` and
+  once NTP has answered. GET reads the chooser's settings, the RTC's three and the ROM options
+  (after their "OPT1" marker) included; LIST reads every page of `FOLDER` and
   of its first subfolder and checks the totals, the `..` entry, the order (folders, then names
   ignoring case), the hidden dot names and the `.rw` and too-long flags; REFUSE sends paths above
   `FOLDER`, through `..` or a backslash, missing files and folders, an unknown key and bad RTC
-  values (an enabled flag other than "true"/"false", a host with a space, ports 0 and 65536), and
+  values (an enabled flag other than "true"/"false", a host with a space, ports 0 and 65536), a ROM
+  option of 16 bytes, and
   checks the settings did not change. `--set` writes the settings flash (each change erases and
   programs its 4 KB sector): it sets FD1 to an image of `FOLDER` and checks the swap, puts FD1
   back, sets the slot after FD0's current one, injects a hello, ejects FD0 and presses SELECT,

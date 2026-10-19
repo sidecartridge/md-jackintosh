@@ -119,6 +119,12 @@ disk mounted that is not the one chosen.
 | **[P]ort** | The NTP server's port (default 123). |
 | **[U] Offset** | The Mac's time zone, kept in its parameter RAM. |
 
+### Emulation options
+
+The menu's **[O]ptions** page sets the Jackintosh ROMs' own options, such as the menu's countdown,
+the Mac's memory, the right mouse button, the screen and the keyboard layout. The Multi-device
+keeps them in its flash with the other choices; the ROMs read them before the Mac starts.
+
 ### Browsing the microSD card
 
 | Key | Action |

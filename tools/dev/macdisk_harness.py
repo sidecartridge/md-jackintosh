@@ -24,15 +24,17 @@ with them.
           left all zeros, which the Mac takes for PRAM never set.
   TIME    MACDISK_CMD_TIME answers; once NTP has answered, the time is within
           a minute of this computer's clock, else it is 0 and not valid
-  GET     MACDISK_CMD_GET_SETTINGS: FOLDER is a path, the slot is 1-10
+  GET     MACDISK_CMD_GET_SETTINGS: FOLDER is a path, the slot is 1-10, the
+          "OPT1" marker is there before the ROM options
   LIST    every page of FOLDER and of its first subfolder: the totals add up,
           ".." first only below FOLDER, folders then files sorted ignoring
           case, no name starting with ".", the .rw and too-long flags match
           the names; a page past the end is refused
   REFUSE  LIST and SET_SETTING refuse a path above FOLDER, one through "..",
           one through a backslash, one that is not there, a folder as an
-          image, a file as FOLDER, an empty FOLDER, an unknown key and bad
-          RTC values; the settings are unchanged after
+          image, a file as FOLDER, an empty FOLDER, an unknown key, bad
+          RTC values and a ROM option too long; the settings are unchanged
+          after
   SET     (--set) writes the settings flash, and puts it back: FD1 set to an
           image of FOLDER is swapped at once (its change counter moves, a
           floppy not named *.rw is read-only) and put back; the slot after
@@ -181,7 +183,8 @@ class Device:
 
     def get_settings(self) -> tuple[int, list[str], int]:
         """GET_SETTINGS: its result, the MACDISK_KEYS values in key order (the
-        paths, then the RTC keys') and FD0's slot."""
+        paths, the RTC keys', the ROM options; None for the options when the
+        "OPT1" marker is missing) and FD0's slot."""
         result = self.command("MACDISK_CMD_GET_SETTINGS", 0)
         if result != self.d("MACDISK_OK"):
             return result, [], 0
@@ -189,9 +192,14 @@ class Device:
         base = self.d("MACDISK_BUFFER_OFFSET")
         raw = st_view(swd.read_memory(self.window + base, self.d("MACDISK_SETTINGS_SIZE")))
         rtc = self.d("MACDISK_SETTINGS_RTC_OFFSET")
-        offsets = [k * size for k in range(paths)]
-        offsets += [rtc + k * size for k in range(self.d("MACDISK_KEYS") - paths)]
-        values = [raw[o:o + size].split(b"\0", 1)[0].decode("cp437") for o in offsets]
+        fields = [(k * size, size) for k in range(paths)]
+        fields += [(rtc + k * size, size) for k in range(self.d("MACDISK_RTC_KEYS"))]
+        opt_size = self.d("MACDISK_OPTION_SIZE")
+        opt = self.d("MACDISK_SETTINGS_OPTION_FIELDS")
+        fields += [(opt + n * opt_size, opt_size) for n in range(self.d("MACDISK_OPTIONS"))]
+        values = [raw[o:o + n].split(b"\0", 1)[0].decode("cp437") for o, n in fields]
+        if be32(raw, self.d("MACDISK_SETTINGS_OPTIONS_OFFSET")) != self.d("MACDISK_OPTIONS_MAGIC"):
+            values[paths + self.d("MACDISK_RTC_KEYS"):] = [None] * self.d("MACDISK_OPTIONS")
         return result, values, be32(raw, self.d("MACDISK_SETTINGS_FD0_SLOT_OFFSET"))
 
     def list_page(self, path: str, first: int) -> tuple[int, dict]:
@@ -462,10 +470,11 @@ def main() -> int:
         param = dev.d("MACDISK_ERR_PARAM")
         got, settings, slot = dev.get_settings()
         folder = settings[dev.d("MACDISK_KEY_FOLDER")] if settings else ""
-        check("GET", got == ok_code and folder.startswith("/") and 1 <= slot <= 10,
+        check("GET", got == ok_code and folder.startswith("/") and 1 <= slot <= 10
+              and None not in settings,
               f"{result_name(dev, got)}: FOLDER {folder!r}, FD0 slot {slot}, "
               f"FD0 slots {settings[1:11]}, FD1 {settings[11:12]}, HD0 {settings[12:13]}, "
-              f"RTC {settings[13:16]}")
+              f"RTC {settings[13:16]}, options {settings[16:26]}")
         if got == ok_code:
             top = folder.rstrip("/") or "/"
             got, listing = dev.list_all(top)
@@ -505,6 +514,8 @@ def main() -> int:
                 ("SET a host with a space", dev.set_setting(dev.d("MACDISK_KEY_NTP_HOST"), "pool ntp.org")),
                 ("SET port 0", dev.set_setting(dev.d("MACDISK_KEY_NTP_PORT"), "0")),
                 ("SET port 65536", dev.set_setting(dev.d("MACDISK_KEY_NTP_PORT"), "65536")),
+                ("SET a 16-byte option", dev.set_setting(dev.d("MACDISK_KEYS") - dev.d("MACDISK_OPTIONS"),
+                                                         "x" * dev.d("MACDISK_OPTION_SIZE"))),
             ]
             if files:
                 refusals.append(("SET FOLDER to a file", dev.set_setting(
