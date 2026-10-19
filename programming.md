@@ -388,9 +388,9 @@ The critical path is in the `emul_start` function called from the `main.c` file.
 1. Read the app mode from the settings.
 2. Copy the cartridge image (`target_firmware.h`) into `ROM_IN_RAM`, then bring up the cartridge ROM4 read engine, the ROM3 command DMA ring and the command dispatcher, in this order: `init_romemul(false); commemul_init(); chandler_init(); chandler_addCB(...)`. Register one callback per subsystem that needs to react to commands: here `emul_bootScreenCb` (the boot screen's request for Booster) and `macdisk_commandCb` (the Mac's disks, time and PRAM), then `macdisk_init()` publishes the identity before the first command is answered.
 3. Configure the SELECT button, before anything slow.
-4. Init the sd card and, if it is there, mount the Mac's disk images (`macdisk_mountAll`). Without a card the app carries on and every unit stays empty.
+4. Init the sd card and mount the Mac's disk images (`macdisk_mountAll`). Without a usable card nothing else starts: the app publishes why (`macdisk_setCardStatus`), keeps answering the ST and blinks the LED until the RP restarts.
 5. Init the network, if needed. The polling callback, `emul_pollTick`, drains `chandler_loop()` and runs `select_poll()`, so commands sent during the multi-second WiFi connect window are not dropped.
-6. Main loop. Each iteration runs the debug mailbox, `select_poll()`, `chandler_loop()` (drains the ROM3 ring → dispatches commands to registered callbacks) and `macdisk_syncPending()`; every 10 ms it polls the network and steps the NTP client (`ntp_pollSync()`).
+6. Main loop. Each iteration runs the debug mailbox, `select_poll()`, `chandler_loop()` (drains the ROM3 ring → dispatches commands to registered callbacks), the ST-boot work (`macdisk_mountEmpty()` after a hello), a pending FD0 step from SELECT (`macdisk_stepFd0()`), the LED and `macdisk_syncPending()`; every 10 ms it polls the network and steps the NTP client (`ntp_pollSync()`).
 7. When the boot screen asks for Booster, leave the main loop, write `CMD_RESET` into the cartridge sentinel (`WRITE_AND_SWAP_LONGWORD` at `CHANDLER_CMD_SENTINEL_OFFSET`), keep answering while the ST sees it, save the setup mode and jump to Booster.
 
 To emulate a service or device of the remote computer in this module we will have to orchestrate the difference services to accomplish the task. As a rule of thumb, reuse as much boiler plate code as possible.
@@ -453,7 +453,7 @@ Writing to the global settings is not allowed from the microfirmware apps. Use t
 
 ##### macdisk.c
 
-The Mac's floppy and hard disk images, served from the micro SD card as 512-byte block devices to the Jackintosh boot ROM (built in the sibling repository `md-jackintosh-roms`), which speaks the command protocol itself with no TOS. Units 0 and 1 are floppies and unit 2 the hard disk; at power-on `macdisk_mountAll()` mounts the first `FD0.*`, `FD1.*` and `HD0.*` in the app folder. The same app number, `$07`, also gives the Mac the time (from `ntp.c`) and keeps its 256 bytes of parameter RAM in `PRAM.BIN`.
+The Mac's floppy and hard disk images, served from the micro SD card as 512-byte block devices to the Jackintosh boot ROM (built in the sibling repository `md-jackintosh-roms`), which speaks the command protocol itself with no TOS. Units 0 and 1 are floppies and unit 2 the hard disk. The images are the Jackintosh ROM's choice, made in the menu it draws and kept in the app settings (`FD0`, `FD0_2` to `FD0_10`, `FD1`, `HD0`: full paths); the commands LIST, GET_SETTINGS and SET_SETTING serve that menu. At power-on `macdisk_mountAll()` mounts FD0's slot 1, FD1 and HD0; a unit whose setting is empty stays empty. A floppy is read-only unless its name ends in `.rw`. The same app number, `$07`, also gives the Mac the time (from `ntp.c`) and keeps its 256 bytes of parameter RAM in `PRAM.BIN`.
 
 `rp/src/include/macdisk.h` is the source of truth for the commands, their payloads, the result codes and the status block at `APP_FREE`; it is the contract with `md-jackintosh-roms`, so change it only after agreeing it there. Every command writes its result before it is answered and is harmless to repeat. `macdisk_syncPending()` syncs written images a few seconds after the first unsynced write; call it from the main loop.
 
@@ -519,7 +519,7 @@ To keep the code simple, give up the app if the network connection is not establ
 
 ##### ntp.c
 
-The time of day from an NTP server (`pool.ntp.org`), without blocking: a state machine that `ntp_pollSync()` steps from the main loop, next to the network poll. Nothing happens until the Wi-Fi has an address; then it asks, retrying every few seconds until one answer arrives, and from then on counts from the RP's timer. `ntp_getUnixTime()` gives UTC seconds since 1970, or false while no server has answered. The request and the checks on the answer come from `md-drives-emulator`'s `rtc.c`, whose query waits for the answer instead.
+The time of day from an NTP server (`pool.ntp.org` port 123, or what the app settings `RTC_NTP_HOST` and `RTC_NTP_PORT` say: `emul.c` passes them to `ntp_setServer()` at the RP's start, and with `RTC_ENABLED` "false" brings no Wi-Fi up at all), without blocking: a state machine that `ntp_pollSync()` steps from the main loop, next to the network poll. Nothing happens until the Wi-Fi has an address; then it asks, retrying every few seconds until one answer arrives, and from then on counts from the RP's timer. `ntp_getUnixTime()` gives UTC seconds since 1970, or false while no server has answered. The request and the checks on the answer come from `md-drives-emulator`'s `rtc.c`, whose query waits for the answer instead.
 
 ##### reset.c
 
@@ -608,7 +608,7 @@ This module is responsible for handling the SELECT button on the device.
 
 The SELECT can have two different functions:
 
-- Short SELECT: Push and release. The RP restarts into the app; the ST keeps running whatever it was running.
+- Short SELECT: Push and release. The RP restarts into the app; the ST keeps running whatever it was running. In a Mac session (the last hello was not followed by `$FF00`, which only the TOS boot screen sends) it steps FD0's slots instead (`macdisk_stepFd0()`): with the drive empty, the next slot that names an image goes in, and the LED flashes once per slot number; with a disk in the drive, nothing happens.
 - Long SELECT: Push and hold for ten (10) seconds (`SELECT_LONG_RESET`). This is a factory reset: `reset_deviceAndEraseFlash()` erases the global settings and the device restarts into the Booster app, which then clears the settings of every app.
 
 `select_poll()` runs the button's state machine and never blocks. It debounces over 30 ms and calls the long-press callback as soon as the button has been held for `SELECT_LONG_RESET`; otherwise it calls the short-press callback on release. Call it from the main loop and from every long wait, next to `chandler_loop()`. A GPIO edge interrupt set up by `select_configure()` records a press that started and ended while nothing could poll, and the next call handles it.

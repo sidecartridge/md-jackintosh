@@ -218,6 +218,7 @@ report to `logs/` and exits 0 only when every check passes.
 python3 tools/dev/tools_harness.py --build --flash --reset   # every tool above, against the device
 python3 tools/dev/power_cycles.py                            # cold boots: boot screen or GEM? (3 by default)
 python3 tools/dev/macdisk_harness.py --hd0 HD0.hda --pram    # the Mac disk, PRAM and time commands
+python3 tools/dev/macdisk_harness.py --set                   # and the chooser's SET and SELECT step
 python3 tools/dev/disktest_harness.py                        # the disk self-test, run on the RP itself
 ```
 
@@ -232,10 +233,11 @@ python3 tools/dev/disktest_harness.py                        # the disk self-tes
 - `disktest_harness.py` runs the disk self-test of a debug build (`rp/src/devdisktest.c`) on
   the RP itself, through the app command `disktest`, and follows `devdisktestState` until it ends.
   The self-test never writes the card's own images: under the app folder it creates
-  `SELFTEST/A` (an 800K and a 400K raw floppy and an 8 MB raw hard disk, cut into about 64
+  `SELFTEST/A` (an 800K and a 400K raw floppy, named `.rw`, and an 8 MB raw hard disk, cut into about 64
   pieces on the card by a filler file) and `SELFTEST/B` (a MacBinary II DiskCopy 4.2 800K floppy,
   a DiskCopy 4.2 400K floppy and a 1 MB raw image marked read-only), each filled with a pattern
-  drawn from the sector number, mounts each set in the three units, and sends them the Mac's
+  drawn from the sector number, mounts each set in the three units by name, whatever the
+  settings say, and sends them the Mac's
   commands as chandler hands them over. It reads every sector of every image, writes 1 and 2
   sectors at the first and last sectors, a cluster boundary, the hard disk's first fragment
   boundary and random places, repeats each write as a retry would, checks the neighbours, finds
@@ -249,10 +251,14 @@ python3 tools/dev/disktest_harness.py                        # the disk self-tes
   `--from-card FILE` checks.
 - `select_harness.py` presses SELECT through `swd.py select` and reads the firmware's state over
   SWD: a 15 ms bounce is ignored, a short press restarts the RP into the app, and a long press
-  (`--force`, after a backup of the settings flash) is a factory reset.
+  (`--force`, after a backup of the settings flash) is a factory reset. In a Mac session (the
+  Jackintosh ROM said hello, the TOS boot screen did not) a short press steps FD0 instead of
+  restarting; `short` says so and stops, and `macdisk_harness.py --set` checks the step.
 - `macdisk_harness.py` checks the Mac's commands (`rp/src/macdisk.c`) with no ST: it injects
   them through the devhooks mailbox, as if the ST had sent them, and reads the status block and
-  the buffer out of the cartridge window. Give it host copies of the images on the card
+  the buffer out of the cartridge window. Its commands share the result slot and the buffer with
+  the ST's, so run it with the ST off or idle at the Jackintosh ROM's menu, never while the Mac
+  uses its disks. Give it host copies of the images on the card
   (`--fd0`, `--fd1`, `--hd0`). It checks the identity long, each unit's status against its copy
   (format, sectors, read-only), reads the first and the last 32 sectors and `--samples` random
   runs (`--full`: every sector) byte for byte as the 68000 reads them, and checks the refusals:
@@ -260,8 +266,17 @@ python3 tools/dev/disktest_harness.py                        # the disk self-tes
   rewrites two sectors of HD0, writes them again as a retry would, and puts them back. `--eject
   UNIT` empties a unit until the next ST boot mounts it again. `--pram` rewrites `PRAM.BIN`
   and puts it back (as zeros if there was none). TIME checks the clock against this computer's
-  once NTP has answered. BUSY reports the slowest command the RP has answered, which the Mac
-  ROM's timeout must cover.
+  once NTP has answered. GET reads the chooser's settings, the RTC's three included; LIST reads every page of `FOLDER` and
+  of its first subfolder and checks the totals, the `..` entry, the order (folders, then names
+  ignoring case), the hidden dot names and the `.rw` and too-long flags; REFUSE sends paths above
+  `FOLDER`, through `..` or a backslash, missing files and folders, an unknown key and bad RTC
+  values (an enabled flag other than "true"/"false", a host with a space, ports 0 and 65536), and
+  checks the settings did not change. `--set` writes the settings flash (each change erases and
+  programs its 4 KB sector): it sets FD1 to an image of `FOLDER` and checks the swap, puts FD1
+  back, sets the slot after FD0's current one, injects a hello, ejects FD0 and presses SELECT,
+  and checks the slot went in; then it puts every setting back and restarts the RP, so the
+  units and FD0's current slot are as at power-on. BUSY reports the slowest command the RP has
+  answered, which the Mac ROM's timeout must cover.
 
 ## Measuring builds
 

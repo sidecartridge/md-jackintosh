@@ -12,6 +12,7 @@
 
 #include "ntp.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "debug.h"
@@ -38,6 +39,8 @@ static absolute_time_t nextAttempt;
 static bool nextAttemptSet = false;
 static uint32_t syncedUnix = 0;
 static uint64_t syncedAtUs = 0;
+static char serverHost[NTP_HOST_SIZE] = NTP_HOST;
+static uint16_t serverPort = NTP_PORT;
 
 static void ntp_retryLater(void) {
   state = NTP_STATE_IDLE;
@@ -53,7 +56,7 @@ static void ntp_dnsFoundCb(const char *name, const ip_addr_t *ipaddr,
   // attempt finds the name in lwIP's cache.
   if (state != NTP_STATE_RESOLVING) return;
   if (ipaddr == NULL) {
-    DPRINTF("ntp: %s not found\n", NTP_HOST);
+    DPRINTF("ntp: %s not found\n", serverHost);
     ntp_retryLater();
     return;
   }
@@ -67,7 +70,7 @@ static void ntp_recvCb(void *arg, struct udp_pcb *upcb, struct pbuf *p,
   (void)upcb;
   if (p == NULL) return;
   if (state != NTP_STATE_WAITING || p->tot_len != NTP_MSG_LEN ||
-      !ip_addr_cmp(&serverIp, addr) || port != NTP_PORT) {
+      !ip_addr_cmp(&serverIp, addr) || port != serverPort) {
     pbuf_free(p);
     return;
   }
@@ -110,7 +113,7 @@ static void ntp_sendRequest(void) {
   uint8_t *req = (uint8_t *)pb->payload;
   memset(req, 0, NTP_MSG_LEN);
   req[0] = 0x1b;  // version 3, client
-  err_t err = udp_sendto(pcb, pb, &serverIp, NTP_PORT);
+  err_t err = udp_sendto(pcb, pb, &serverIp, serverPort);
   pbuf_free(pb);
   if (err != ERR_OK) {
     DPRINTF("ntp: request not sent: %s\n", lwip_strerr(err));
@@ -119,6 +122,12 @@ static void ntp_sendRequest(void) {
   }
   state = NTP_STATE_WAITING;
   deadline = make_timeout_time_ms(NTP_ATTEMPT_TIMEOUT_MS);
+}
+
+void ntp_setServer(const char *host, uint16_t port) {
+  snprintf(serverHost, sizeof(serverHost), "%s", host);
+  serverPort = port;
+  DPRINTF("ntp: server %s, port %u\n", serverHost, (unsigned)serverPort);
 }
 
 void ntp_pollSync(void) {
@@ -138,7 +147,8 @@ void ntp_pollSync(void) {
       resolved = false;
       state = NTP_STATE_RESOLVING;
       deadline = make_timeout_time_ms(NTP_ATTEMPT_TIMEOUT_MS);
-      err_t err = dns_gethostbyname(NTP_HOST, &serverIp, ntp_dnsFoundCb, NULL);
+      err_t err =
+          dns_gethostbyname(serverHost, &serverIp, ntp_dnsFoundCb, NULL);
       if (err == ERR_OK) {
         ntp_sendRequest();  // cached, or a literal address
       } else if (err != ERR_INPROGRESS) {

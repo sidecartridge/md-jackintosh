@@ -5,7 +5,8 @@ Each case presses SELECT through swd.py's GPIO input override, then reads the
 firmware's own state over SWD and says whether it matches the behaviour:
 
   bounce           15 ms press: ignored (the debounce is 30 ms)
-  short            short press: the RP restarts into the app
+  short            short press: the RP restarts into the app (not in a Mac
+                   session, where it steps FD0's slots)
   long             a press held past SELECT_LONG_RESET: factory reset (the
                    global settings are erased and the RP restarts into
                    Booster, which then clears every app's settings). Needs
@@ -33,7 +34,7 @@ TIMERAWL = 0x40054028
 FLASH_END = 0x10200000  # 2 MB flash on the SidecarTridge Multi-device
 BOUNCE_MS = 15
 
-SYMBOLS = ("keepActive", "_config_flash_start")
+SYMBOLS = ("keepActive", "macSession", "_config_flash_start")
 
 
 class Harness:
@@ -107,6 +108,12 @@ def case_bounce(h: Harness) -> int:
 
 
 def case_short(h: Harness) -> int:
+    if h.byte("macSession"):
+        print("the ST is in a Mac session: a short press steps FD0 instead of "
+              "restarting the RP (macdisk_harness.py --set checks that). Reset "
+              "the ST into the TOS boot screen, or switch it off and restart "
+              "the RP, then try again.")
+        return 2
     before = h.state()
     show("before", before)
     h.press(swd.SELECT_SHORT_MS)

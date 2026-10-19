@@ -15,17 +15,35 @@ and a Restart comes back to the Finder.
 - **The Mac's disks** (`rp/src/macdisk.c`, `rp/src/include/macdisk.h`):
   two floppies and a hard disk as 512-byte block devices, app `$07`:
   READ `$0700` (up to 32 sectors), WRITE `$0701` (up to 2 sectors, one
-  `send_write_sync`) and EJECT `$0702`. At power-on the first `FD0.*`,
-  `FD1.*` and `HD0.*` in the app folder are mounted: raw images
-  read-write, DiskCopy 4.2 and MacBinary II DiskCopy 4.2 read-only. The
+  `send_write_sync`) and EJECT `$0702`. At power-on the images the
+  settings name are mounted (see the disk chooser below), and a unit with
+  none stays empty: raw images read-write (a floppy only when its name ends
+  in `.rw`, as in md-drives-emulator), DiskCopy 4.2 and MacBinary II
+  DiskCopy 4.2 read-only. The
   status block at `$FA2300` holds the last result, an identity long
   (`$4A4B0001`) and, per unit, flags, sectors, a change counter and the
   format; sector data is at `$FA2400`. Writes are synced 3 s after the
   first unsynced one. A unit an EJECT emptied, as a Mac's Restart and
   Shut Down do, is mounted again at the ST's next boot. `macdisk.h` is the
   contract with the ROMs.
+- **The disk chooser** the ROMs draw, as md-drives-emulator's menu:
+  LIST `$0706` lists a folder of the card, 16 entries at a time (".."
+  first below the app folder, then folders, then files, sorted ignoring
+  case, dot names hidden; or from "/", for choosing the app folder);
+  GET_SETTINGS `$0707` and SET_SETTING `$0708` read and write the app
+  folder, FD0's ten slots, FD1 and HD0 in the app settings. A SET is
+  checked (inside the app folder, a file for an image, a folder for the
+  app folder), saved at once, and swaps the unit's image before the
+  answer. In a Mac session a short SELECT press puts FD0's next slot in
+  the drive if the drive is empty, and the LED flashes once per slot
+  number; with a disk in the drive it does nothing. Outside one it still
+  restarts the RP.
 - **The time of day** (`rp/src/ntp.c`): an NTP client that never blocks
-  the command channel; TIME `$0703` gives UTC seconds since 1904.
+  the command channel; TIME `$0703` gives UTC seconds since 1904. The
+  chooser's settings turn it on or off and name the server and port
+  (md-drives-emulator's `RTC_ENABLED`, `RTC_NTP_HOST`, `RTC_NTP_PORT`;
+  `pool.ntp.org`, 123 by default), from the RP's next start; with it off
+  the RP does not bring Wi-Fi up at all.
 - **The parameter RAM**: PRAM_READ `$0704` and PRAM_WRITE `$0705` keep the
   Mac's 256 bytes in `PRAM.BIN` in the app folder.
 - **The TOS boot screen** (`target/atarist/src/main.s`), in GEMDOS calls:

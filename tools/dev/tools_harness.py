@@ -170,6 +170,7 @@ def device_checks(do_reset):
           and "frames" in out2, out2.strip().splitlines()[-1] if out2.strip() else "")
 
     print("select (one OpenOCD session: press, look, release)")
+    mac_session = swd.read_memory(swd.elf_symbols(elf, "macSession")["macSession"][0], 1)[0]
     select_cur = LogCursor()
     gpio = defs["SELECT_GPIO"]
     ctrl = swd.IO_BANK0 + 4 + 8 * gpio
@@ -186,9 +187,15 @@ def device_checks(do_reset):
 
     # A released SELECT is a short press, which restarts the RP (since SELECT
     # was wired up): wait until the app loop is back before attaching GDB, or
-    # its flash probe lands in the middle of boot2 setting up XIP.
-    booted = select_cur.wait(r"Start the app loop", 60)
-    check("select: the release restarts the RP into its app loop", booted)
+    # its flash probe lands in the middle of boot2 setting up XIP. In a Mac
+    # session it steps FD0's slots instead, and the RP keeps running.
+    if mac_session:
+        restarted = select_cur.wait(r"Start the app loop", 5)
+        check("select: in a Mac session the release does not restart the RP",
+              not restarted)
+    else:
+        booted = select_cur.wait(r"Start the app loop", 60)
+        check("select: the release restarts the RP into its app loop", booted)
     print("crash, postmortem")
     rc, out = swdpy("crash")
     check("crash reads the watchdog reason", rc == 0 and "watchdog reason" in out)

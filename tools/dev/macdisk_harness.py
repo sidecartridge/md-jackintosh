@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Check the Mac disk commands (rp/src/macdisk.c) on the device.
 
-The firmware mounts FD0.*, FD1.* and HD0.* from its app folder at power-on.
-Give the host's copies of the same files with --fd0, --fd1 and --hd0: every
-case compares what the 68000 would read in the cartridge window with them.
+The firmware mounts its settings' images at power-on; a unit with none stays
+empty. Give the host's copies of the mounted files with --fd0, --fd1 and
+--hd0: every case compares what the 68000 would read in the cartridge window
+with them.
 
   ID      the identity long is MACDISK_ID
   STATUS  each unit given is inserted, with the format, sector count and
@@ -23,14 +24,33 @@ case compares what the 68000 would read in the cartridge window with them.
           left all zeros, which the Mac takes for PRAM never set.
   TIME    MACDISK_CMD_TIME answers; once NTP has answered, the time is within
           a minute of this computer's clock, else it is 0 and not valid
+  GET     MACDISK_CMD_GET_SETTINGS: FOLDER is a path, the slot is 1-10
+  LIST    every page of FOLDER and of its first subfolder: the totals add up,
+          ".." first only below FOLDER, folders then files sorted ignoring
+          case, no name starting with ".", the .rw and too-long flags match
+          the names; a page past the end is refused
+  REFUSE  LIST and SET_SETTING refuse a path above FOLDER, one through "..",
+          one through a backslash, one that is not there, a folder as an
+          image, a file as FOLDER, an empty FOLDER, an unknown key and bad
+          RTC values; the settings are unchanged after
+  SET     (--set) writes the settings flash, and puts it back: FD1 set to an
+          image of FOLDER is swapped at once (its change counter moves, a
+          floppy not named *.rw is read-only) and put back; the slot after
+          FD0's current one set to an image leaves FD0 alone, and after a
+          hello (injected) and an eject a short SELECT press puts it in FD0.
+          Then the settings are put back and the RP restarted, so the units
+          and FD0's current slot are as at power-on, and GET is checked again
   BUSY    the slowest command the RP answered since it booted
           (chandlerMaxBusyUs): the Mac ROM's timeout must cover it
 
 The commands go through the devhooks mailbox, as if the ST had sent them, so
-it needs a debug build and the Debug Probe, and no ST.
+it needs a debug build and the Debug Probe, and no ST. They share the result
+slot and the buffer with the ST's own commands: run it with the ST off or idle
+at the Jackintosh ROM's menu, never while the Mac uses its disks.
 
     python3 tools/dev/macdisk_harness.py --fd0 System.image --hd0 HD0.hda
     python3 tools/dev/macdisk_harness.py --hd0 HD0.hda --write --full --pram
+    python3 tools/dev/macdisk_harness.py --set
 
 Exits 0 when every check passes. Writes tools/dev/logs/macdisk-harness-<time>.json.
 """
@@ -151,9 +171,105 @@ class Device:
             return result, b""
         return result, st_view(swd.read_memory(self.window + self.d("MACDISK_BUFFER_OFFSET"), size))
 
+    def path_data(self, path: str) -> bytes:
+        data = path.encode("cp437") + b"\0"
+        return data + b"\0" * (len(data) & 1)
+
+    def text(self, offset: int, size: int) -> str:
+        raw = st_view(swd.read_memory(self.window + offset, size))
+        return raw.split(b"\0", 1)[0].decode("cp437")
+
+    def get_settings(self) -> tuple[int, list[str], int]:
+        """GET_SETTINGS: its result, the MACDISK_KEYS values in key order (the
+        paths, then the RTC keys') and FD0's slot."""
+        result = self.command("MACDISK_CMD_GET_SETTINGS", 0)
+        if result != self.d("MACDISK_OK"):
+            return result, [], 0
+        size, paths = self.d("MACDISK_PATH_SIZE"), self.d("MACDISK_PATH_KEYS")
+        base = self.d("MACDISK_BUFFER_OFFSET")
+        raw = st_view(swd.read_memory(self.window + base, self.d("MACDISK_SETTINGS_SIZE")))
+        rtc = self.d("MACDISK_SETTINGS_RTC_OFFSET")
+        offsets = [k * size for k in range(paths)]
+        offsets += [rtc + k * size for k in range(self.d("MACDISK_KEYS") - paths)]
+        values = [raw[o:o + size].split(b"\0", 1)[0].decode("cp437") for o in offsets]
+        return result, values, be32(raw, self.d("MACDISK_SETTINGS_FD0_SLOT_OFFSET"))
+
+    def list_page(self, path: str, first: int) -> tuple[int, dict]:
+        result = self.command("MACDISK_CMD_LIST", first & 0xFFFF, first >> 16, 0,
+                              self.path_data(path))
+        if result != self.d("MACDISK_OK"):
+            return result, {}
+        base = self.d("MACDISK_BUFFER_OFFSET")
+        head = st_view(swd.read_memory(self.window + base, 12))
+        total, returned, flags = struct.unpack(">III", head)
+        size = self.d("MACDISK_LIST_ENTRY_SIZE")
+        raw = st_view(swd.read_memory(
+            self.window + base + self.d("MACDISK_LIST_ENTRIES"), returned * size)) \
+            if returned else b""
+        entries = []
+        for i in range(returned):
+            e = raw[i * size:(i + 1) * size]
+            name = e[self.d("MACDISK_ENTRY_NAME"):self.d("MACDISK_PATH_SIZE")]
+            entries.append({"name": name.split(b"\0", 1)[0].decode("cp437"),
+                            "flags": be32(e, self.d("MACDISK_ENTRY_FLAGS")),
+                            "bytes": be32(e, self.d("MACDISK_ENTRY_BYTES"))})
+        return result, {"total": total, "returned": returned, "flags": flags,
+                        "entries": entries}
+
+    def list_all(self, path: str) -> tuple[int, dict]:
+        """Every page of a folder, from the first."""
+        result, page = self.list_page(path, 0)
+        if result != self.d("MACDISK_OK"):
+            return result, {}
+        entries = list(page["entries"])
+        while page["returned"] and len(entries) < page["total"]:
+            result, page = self.list_page(path, len(entries))
+            if result != self.d("MACDISK_OK"):
+                return result, {}
+            entries += page["entries"]
+        return result, {"total": page["total"], "flags": page["flags"],
+                        "entries": entries}
+
+    def set_setting(self, key: int, path: str) -> int:
+        return self.command("MACDISK_CMD_SET_SETTING", key, 0, 0, self.path_data(path))
+
     def max_busy_us(self) -> int:
         addr = swd.elf_symbols(self.elf, "chandlerMaxBusyUs")["chandlerMaxBusyUs"][0]
         return struct.unpack("<I", swd.read_memory(addr, 4))[0]
+
+
+def child(folder: str, name: str) -> str:
+    return ("" if folder == "/" else folder) + "/" + name
+
+
+def check_listing(dev: Device, folder: str, top: str, listing: dict) -> list[str]:
+    """What is wrong with a whole listing of folder, by macdisk.h's rules."""
+    bad = []
+    entries = listing["entries"]
+    is_folder = dev.d("MACDISK_ENTRY_FOLDER")
+    if len(entries) != listing["total"]:
+        bad.append(f"{len(entries)} entries in the pages, total {listing['total']}")
+    below = folder.lower() != top.lower()
+    has_parent = bool(entries) and entries[0]["name"] == ".."
+    if has_parent != below:
+        bad.append("'..' " + ("missing" if below else "at the top"))
+    rest = entries[1:] if has_parent else entries
+    key = [(0 if e["flags"] & is_folder else 1, e["name"].encode("cp437").lower())
+           for e in rest]
+    if key != sorted(key):
+        bad.append("not sorted: folders first, then names ignoring case")
+    for e in rest:
+        name = e["name"]
+        folderish = bool(e["flags"] & is_folder)
+        rw = not folderish and name.lower().endswith(".rw") and len(name) > 3
+        too_long = len(child(folder, name).encode("cp437")) >= dev.d("MACDISK_PATH_SIZE")
+        want = ((is_folder if folderish else 0) | (dev.d("MACDISK_ENTRY_RW") if rw else 0)
+                | (dev.d("MACDISK_ENTRY_TOO_LONG") if too_long else 0))
+        if name.startswith("."):
+            bad.append(f"{name}: a dot name listed")
+        elif e["flags"] != want and not too_long:
+            bad.append(f"{name}: flags {e['flags']}, want {want}")
+    return bad
 
 
 def result_name(dev: Device, value: int) -> str:
@@ -174,6 +290,9 @@ def main() -> int:
     ap.add_argument("--eject", choices=UNITS, help="eject this unit at the end")
     ap.add_argument("--pram", action="store_true",
                     help="rewrite PRAM.BIN and put it back")
+    ap.add_argument("--set", action="store_true",
+                    help="change the image settings (the settings flash), put "
+                         "them back, and restart the RP")
     ap.add_argument("--seed", type=int, default=int(time.time()))
     ap.add_argument("--elf")
     args = ap.parse_args()
@@ -339,6 +458,144 @@ def main() -> int:
             check("TIME", got == ok_code and seconds == 0 and flags == 0,
                   f"{result_name(dev, got)}, not synced yet (no Wi-Fi, or no NTP "
                   f"answer yet): seconds {seconds}, flags {flags}")
+
+        param = dev.d("MACDISK_ERR_PARAM")
+        got, settings, slot = dev.get_settings()
+        folder = settings[dev.d("MACDISK_KEY_FOLDER")] if settings else ""
+        check("GET", got == ok_code and folder.startswith("/") and 1 <= slot <= 10,
+              f"{result_name(dev, got)}: FOLDER {folder!r}, FD0 slot {slot}, "
+              f"FD0 slots {settings[1:11]}, FD1 {settings[11:12]}, HD0 {settings[12:13]}, "
+              f"RTC {settings[13:16]}")
+        if got == ok_code:
+            top = folder.rstrip("/") or "/"
+            got, listing = dev.list_all(top)
+            bad = check_listing(dev, top, top, listing) if got == ok_code else []
+            files = [e for e in listing.get("entries", [])
+                     if not e["flags"] & (dev.d("MACDISK_ENTRY_FOLDER") | dev.d("MACDISK_ENTRY_TOO_LONG"))]
+            check(f"LIST {top}", got == ok_code and not bad,
+                  f"{result_name(dev, got)}, {listing.get('total')} entries"
+                  + (f", flags {listing.get('flags')}" if listing.get("flags") else "")
+                  + (": " + "; ".join(bad) if bad else ", as macdisk.h says"))
+            sub = next((e["name"] for e in listing.get("entries", [])
+                        if e["flags"] == dev.d("MACDISK_ENTRY_FOLDER") and e["name"] != ".."), None)
+            if sub:
+                path = child(top, sub)
+                got, inner = dev.list_all(path)
+                bad = check_listing(dev, path, top, inner) if got == ok_code else []
+                check(f"LIST {path}", got == ok_code and not bad,
+                      f"{result_name(dev, got)}, {inner.get('total')} entries"
+                      + (": " + "; ".join(bad) if bad else ", '..' first"))
+            past = dev.list_page(top, listing.get("total", 0) + 1)[0]
+
+            refusals = [("LIST past the end", past)]
+            if top != "/":
+                refusals.append(("LIST /", dev.list_page("/", 0)[0]))
+            refusals += [
+                ("LIST through '..'", dev.list_page(top + "/..", 0)[0]),
+                ("LIST through a backslash", dev.list_page(top + "\\..", 0)[0]),
+                ("LIST a missing folder", dev.list_page(top + "/no such folder", 0)[0]),
+                ("SET an unknown key", dev.set_setting(dev.d("MACDISK_KEYS"), child(top, "x"))),
+                ("SET FD1 to a missing file", dev.set_setting(dev.d("MACDISK_KEY_FD1"),
+                                                              child(top, "no such image"))),
+                ("SET FD1 to a folder", dev.set_setting(dev.d("MACDISK_KEY_FD1"), top)),
+                ("SET FD1 through '..'", dev.set_setting(dev.d("MACDISK_KEY_FD1"),
+                                                         top + "/../x.dsk")),
+                ("SET an empty FOLDER", dev.set_setting(dev.d("MACDISK_KEY_FOLDER"), "")),
+                ("SET RTC_ENABLED to 'yes'", dev.set_setting(dev.d("MACDISK_KEY_RTC_ENABLED"), "yes")),
+                ("SET a host with a space", dev.set_setting(dev.d("MACDISK_KEY_NTP_HOST"), "pool ntp.org")),
+                ("SET port 0", dev.set_setting(dev.d("MACDISK_KEY_NTP_PORT"), "0")),
+                ("SET port 65536", dev.set_setting(dev.d("MACDISK_KEY_NTP_PORT"), "65536")),
+            ]
+            if files:
+                refusals.append(("SET FOLDER to a file", dev.set_setting(
+                    dev.d("MACDISK_KEY_FOLDER"), child(top, files[0]["name"]))))
+            bad = [f"{label}: {result_name(dev, r)}" for label, r in refusals if r != param]
+            after = dev.get_settings()
+            same = after[1:] == (settings, slot)
+            check("REFUSE", not bad and same,
+                  ("; ".join(bad) or f"{len(refusals)} refusals, all MACDISK_ERR_PARAM")
+                  + ("" if same else "; the settings CHANGED"))
+
+            if args.set:
+                fd1, fd0 = dev.d("MACDISK_KEY_FD1"), 0
+                image = next((e for e in files if e["bytes"] >= 2 * SECTOR), None)
+                if image is None:
+                    check("SET", False, f"needs an image file in {top}")
+                else:
+                    path = child(top, image["name"])
+                    rw = image["flags"] & dev.d("MACDISK_ENTRY_RW")
+                    before = dev.unit(1)
+                    got = dev.set_setting(fd1, path)
+                    now = dev.unit(1)
+                    readonly = bool(now["flags"] & dev.d("MACDISK_FLAG_READONLY"))
+                    stored = dev.get_settings()[1][fd1]
+                    ok = (got == ok_code and stored == path and now["changes"] != before["changes"]
+                          and now["flags"] & dev.d("MACDISK_FLAG_INSERTED")
+                          and (rw or readonly))
+                    check("SET FD1", ok, f"{path}: {result_name(dev, got)}, unit {now}, "
+                          f"{'named *.rw' if rw else 'read-only, not named *.rw'}")
+
+                    got = dev.set_setting(fd1, settings[fd1])
+                    swd.send_protocol(elf, dev.d("CHANDLER_ST_HELLO"), [])  # as at a boot
+                    time.sleep(1.0)
+                    back = dev.unit(1)
+                    same = {k: back[k] for k in ("flags", "sectors", "format")} == \
+                        {k: before[k] for k in ("flags", "sectors", "format")}
+                    check("SET FD1 back", got == ok_code and same,
+                          f"{settings[fd1]!r}: {result_name(dev, got)}, after a hello {back}")
+
+                    nxt = slot % dev.d("MACDISK_FD0_SLOTS") + 1
+                    before = dev.unit(0)
+                    got = dev.set_setting(nxt, path)
+                    alone = dev.unit(0) == before
+                    swd.send_protocol(elf, dev.d("CHANDLER_ST_HELLO"), [])  # a Mac session
+                    time.sleep(1.0)
+                    ejected = dev.command("MACDISK_CMD_EJECT", fd0)
+                    swd.cmd_select(argparse.Namespace(press="short", hold_ms=None, force=False))
+                    time.sleep(1.5)
+                    stepped = dev.unit(0)
+                    _, _, now_slot = dev.get_settings()
+                    ok = (got == ok_code and alone and ejected == ok_code and now_slot == nxt
+                          and stepped["flags"] & dev.d("MACDISK_FLAG_INSERTED")
+                          and stepped["sectors"] == now["sectors"])
+                    check("SET and SELECT FD0", ok,
+                          f"slot {nxt} {result_name(dev, got)}, FD0 "
+                          f"{'untouched' if alone else 'CHANGED'}; after a hello, an eject and "
+                          f"SELECT: slot {now_slot}, FD0 {stepped}")
+
+                bad = []
+                for key, value in enumerate(settings):
+                    if key != dev.d("MACDISK_KEY_FOLDER"):
+                        got = dev.set_setting(key, value)
+                        if got != ok_code:
+                            bad.append(f"key {key}: {result_name(dev, got)}")
+                swd.chip_reset()
+                after: tuple = (None,)
+                end = time.monotonic() + 40
+                while time.monotonic() < end:
+                    time.sleep(2)
+                    try:
+                        # An app command nobody handles: acknowledged once the
+                        # main loop runs, after the window is set up.
+                        swd.mailbox_request(elf, swd.KIND_APP, 0xFFFF, [])
+                        # A Mac ROM on the ST says hello and asks for the
+                        # settings as soon as the RP is back, in the same
+                        # buffer: read until two answers agree.
+                        previous: tuple = (None,)
+                        for _ in range(5):
+                            after = dev.get_settings()
+                            if after == previous:
+                                break
+                            previous = after
+                            time.sleep(1)
+                        break
+                    except swd.SwdError:
+                        pass
+                same = after[1:] == (settings, 1)
+                check("SET back", not bad and same,
+                      ("; ".join(bad) or "every setting put back")
+                      + (", the RP restarted: GET as before, slot 1" if same
+                         else f"; after the restart GET answers {after}"))
 
         busy = dev.max_busy_us()
         check("BUSY", True, f"slowest command answered in {busy} us", max_busy_us=busy)

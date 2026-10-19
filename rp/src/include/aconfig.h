@@ -15,6 +15,23 @@
 
 #define ACONFIG_PARAM_FOLDER "FOLDER"
 #define ACONFIG_PARAM_MODE "MODE"
+// The Mac's images, as full paths (macdisk.h): FD0's slots 1 to 10, FD1, HD0.
+#define ACONFIG_PARAM_FD0 "FD0"
+#define ACONFIG_PARAM_FD0_2 "FD0_2"
+#define ACONFIG_PARAM_FD0_3 "FD0_3"
+#define ACONFIG_PARAM_FD0_4 "FD0_4"
+#define ACONFIG_PARAM_FD0_5 "FD0_5"
+#define ACONFIG_PARAM_FD0_6 "FD0_6"
+#define ACONFIG_PARAM_FD0_7 "FD0_7"
+#define ACONFIG_PARAM_FD0_8 "FD0_8"
+#define ACONFIG_PARAM_FD0_9 "FD0_9"
+#define ACONFIG_PARAM_FD0_10 "FD0_10"
+#define ACONFIG_PARAM_FD1 "FD1"
+#define ACONFIG_PARAM_HD0 "HD0"
+// The time from NTP (macdisk.h's RTC keys), named as in md-drives-emulator.
+#define ACONFIG_PARAM_RTC_ENABLED "RTC_ENABLED"
+#define ACONFIG_PARAM_RTC_NTP_HOST "RTC_NTP_HOST"
+#define ACONFIG_PARAM_RTC_NTP_PORT "RTC_NTP_PORT"
 
 #define ACONFIG_SUCCESS 0
 #define ACONFIG_INIT_ERROR -1

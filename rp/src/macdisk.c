@@ -12,7 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
+#include "aconfig.h"
 #include "constants.h"
 #include "debug.h"
 #include "ff.h"
@@ -52,9 +54,37 @@ typedef struct {
 static const char *const unitNames[MACDISK_UNITS] = {"FD0", "FD1", "HD0"};
 static MacdiskUnit units[MACDISK_UNITS];
 
+// The app settings of the MACDISK_KEY_* keys, in their order.
+static const char *const settingKeys[MACDISK_KEYS] = {
+    ACONFIG_PARAM_FOLDER,       ACONFIG_PARAM_FD0,
+    ACONFIG_PARAM_FD0_2,        ACONFIG_PARAM_FD0_3,
+    ACONFIG_PARAM_FD0_4,        ACONFIG_PARAM_FD0_5,
+    ACONFIG_PARAM_FD0_6,        ACONFIG_PARAM_FD0_7,
+    ACONFIG_PARAM_FD0_8,        ACONFIG_PARAM_FD0_9,
+    ACONFIG_PARAM_FD0_10,       ACONFIG_PARAM_FD1,
+    ACONFIG_PARAM_HD0,          ACONFIG_PARAM_RTC_ENABLED,
+    ACONFIG_PARAM_RTC_NTP_HOST, ACONFIG_PARAM_RTC_NTP_PORT};
+static uint8_t fd0Slot = 1;  // FD0's current slot
+
+// LIST's last listing. It takes 26 KB, so it is allocated by the first LIST,
+// and kept.
+typedef struct {
+  char name[MACDISK_PATH_SIZE];  // NUL-padded
+  uint32_t flags;                // MACDISK_ENTRY_*
+  uint32_t bytes;
+} MacdiskListEntry;
+static MacdiskListEntry *listing = NULL;
+static uint32_t listingCount = 0;
+static uint32_t listingFlags = 0;
+static char listingPath[MACDISK_PATH_SIZE];  // "" while there is none
+static bool listingWholeCard = false;
+
 // Static, not on core 0's stack: a FILINFO with long names is ~280 bytes.
 static FILINFO fileInfo;
 static char unitPath[SETTINGS_MAX_VALUE_LENGTH + FF_LFN_BUF + 2];
+// A path from LIST or SET_SETTING, and FOLDER as their top.
+static char requestPath[MACDISK_PATH_SIZE] __attribute__((aligned(2)));
+static char topFolder[MACDISK_PATH_SIZE];
 static uint8_t probe[MACDISK_PROBE_SIZE];
 // One write's data, or the PRAM, in the disk's byte order.
 static uint8_t writeBuffer[MACDISK_MAX_WRITE_SECTORS * MACDISK_SECTOR_SIZE];
@@ -79,7 +109,6 @@ static uint32_t commandLogLost = 0;
 
 static bool cardMounted = false;
 static bool cardActivity = false;  // since macdisk_consumeCardActivity()
-static char mountFolder[SETTINGS_MAX_VALUE_LENGTH];
 static char pramPath[SETTINGS_MAX_VALUE_LENGTH + sizeof(MACDISK_PRAM_FILE) + 1];
 static FIL pramFile;
 
@@ -90,6 +119,31 @@ static inline uint8_t *macdisk_windowBase(void) {
 static uint32_t macdisk_readBe32(const uint8_t *p) {
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
          ((uint32_t)p[2] << 8) | p[3];
+}
+
+static void macdisk_writeBe32(uint8_t *p, uint32_t value) {
+  p[0] = (uint8_t)(value >> 24);
+  p[1] = (uint8_t)(value >> 16);
+  p[2] = (uint8_t)(value >> 8);
+  p[3] = (uint8_t)value;
+}
+
+static const char *macdisk_setting(uint8_t key) {
+  const SettingsConfigEntry *entry =
+      settings_find_entry(aconfig_getContext(), settingKeys[key]);
+  return (entry != NULL) ? entry->value : "";
+}
+
+// The setting that names unit's image: FD0's current slot, FD1 or HD0.
+static uint8_t macdisk_unitKey(uint8_t unit) {
+  if (unit == MACDISK_UNIT_FD0) return MACDISK_KEY_FD0_SLOT(fd0Slot);
+  return (unit == MACDISK_UNIT_FD1) ? MACDISK_KEY_FD1 : MACDISK_KEY_HD0;
+}
+
+// md-drives-emulator's floppy rule: only a name ending in ".rw" is written.
+static bool macdisk_isRw(const char *name) {
+  size_t len = strlen(name);
+  return len > 3 && strcasecmp(name + len - 3, ".rw") == 0;
 }
 
 static void macdisk_publishUnit(uint8_t unit) {
@@ -189,8 +243,8 @@ static void macdisk_setupFastseek(MacdiskUnit *u) {
   u->cltbl = tbl;
 }
 
-static void macdisk_mountUnit(uint8_t unit, const char *folder) {
-  MacdiskUnit *u = &units[unit];
+// The first file named FD0.*, FD1.* or HD0.* in folder, into unitPath.
+static bool macdisk_findByName(uint8_t unit, const char *folder) {
   char pattern[8];
   snprintf(pattern, sizeof(pattern), "%s.*", unitNames[unit]);
 
@@ -204,12 +258,21 @@ static void macdisk_mountUnit(uint8_t unit, const char *folder) {
   if (fr != FR_OK || fileInfo.fname[0] == '\0') {
     DPRINTF("macdisk: %s empty, no %s in %s\n", unitNames[unit], pattern,
             folder);
-    return;
+    return false;
   }
   snprintf(unitPath, sizeof(unitPath), "%s/%s", folder, fileInfo.fname);
+  return true;
+}
 
-  u->readOnly = false;
-  fr = f_open(&u->file, unitPath, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
+// Open unitPath as unit's image.
+static void macdisk_openUnit(uint8_t unit) {
+  MacdiskUnit *u = &units[unit];
+  // A floppy not named *.rw is opened read-only, so nothing can write it.
+  u->readOnly = (unit != MACDISK_UNIT_HD0) && !macdisk_isRw(unitPath);
+  FRESULT fr = FR_DENIED;
+  if (!u->readOnly) {
+    fr = f_open(&u->file, unitPath, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
+  }
   if (fr == FR_DENIED || fr == FR_WRITE_PROTECTED) {
     u->readOnly = true;
     fr = f_open(&u->file, unitPath, FA_OPEN_EXISTING | FA_READ);
@@ -236,6 +299,22 @@ static void macdisk_mountUnit(uint8_t unit, const char *folder) {
   DPRINTF("macdisk: %s is %s, format %u, %lu sectors, %s\n", unitNames[unit],
           unitPath, (unsigned)u->format, (unsigned long)u->sectors,
           u->readOnly ? "read-only" : "read-write");
+}
+
+// Mount the image unit's setting names; an empty setting leaves it empty.
+// With byNameIn, the first <unit>.* in that folder instead (the self-test).
+static void macdisk_mountUnit(uint8_t unit, const char *byNameIn) {
+  if (byNameIn != NULL) {
+    if (!macdisk_findByName(unit, byNameIn)) return;
+  } else {
+    const char *chosen = macdisk_setting(macdisk_unitKey(unit));
+    if (chosen[0] == '\0') {
+      DPRINTF("macdisk: %s empty, no image chosen\n", unitNames[unit]);
+      return;
+    }
+    snprintf(unitPath, sizeof(unitPath), "%s", chosen);
+  }
+  macdisk_openUnit(unit);
 }
 
 static bool macdisk_syncUnit(uint8_t unit) {
@@ -393,6 +472,253 @@ static int32_t macdisk_writePram(const uint16_t *data, uint32_t dataBytes) {
   return MACDISK_OK;
 }
 
+// The path the ST sent after the registers, into requestPath: in the 68000's
+// byte order, NUL-terminated within MACDISK_PATH_SIZE bytes.
+static bool macdisk_takePath(const uint16_t *data, uint32_t dataBytes) {
+  uint32_t bytes =
+      (dataBytes < MACDISK_PATH_SIZE) ? dataBytes : MACDISK_PATH_SIZE;
+  bytes &= ~1u;
+  COPY_AND_CHANGE_ENDIANESS_BLOCK16(data, requestPath, bytes);
+  return memchr(requestPath, '\0', bytes) != NULL;
+}
+
+// An absolute path with no empty, "." or ".." part, no backslash and no ':':
+// FatFs follows ".." and takes a backslash for '/', and either would lead out
+// of FOLDER. A trailing '/' is dropped.
+static bool macdisk_checkPath(char *path) {
+  size_t len = strlen(path);
+  if (len == 0 || path[0] != '/' || strpbrk(path, "\\:") != NULL) return false;
+  if (len > 1 && path[len - 1] == '/') path[--len] = '\0';
+  for (const char *part = path + 1; len > 1;) {
+    const char *slash = strchr(part, '/');
+    size_t n = (slash != NULL) ? (size_t)(slash - part) : strlen(part);
+    bool dots = part[0] == '.' && (n == 1 || (n == 2 && part[1] == '.'));
+    if (n == 0 || dots) return false;
+    if (slash == NULL) break;
+    part = slash + 1;
+  }
+  return true;
+}
+
+// FOLDER as it is now, without a trailing '/', into topFolder.
+static void macdisk_loadTopFolder(void) {
+  snprintf(topFolder, sizeof(topFolder), "%s",
+           macdisk_setting(MACDISK_KEY_FOLDER));
+  size_t len = strlen(topFolder);
+  if (len > 1 && topFolder[len - 1] == '/') topFolder[len - 1] = '\0';
+  if (topFolder[0] == '\0') snprintf(topFolder, sizeof(topFolder), "/");
+}
+
+// path is top or inside it.
+static bool macdisk_isInside(const char *path, const char *top) {
+  size_t len = strlen(top);
+  if (len == 1) return true;  // "/"
+  return strncasecmp(path, top, len) == 0 &&
+         (path[len] == '\0' || path[len] == '/');
+}
+
+static int32_t macdisk_pathResult(FRESULT fr) {
+  if (fr == FR_OK) return MACDISK_OK;
+  if (fr == FR_NO_FILE || fr == FR_NO_PATH || fr == FR_INVALID_NAME) {
+    return MACDISK_ERR_PARAM;
+  }
+  DPRINTF("macdisk: %s: error %d\n", requestPath, (int)fr);
+  return MACDISK_ERR_IO;
+}
+
+// md-drives-emulator's order: folders first, then names ignoring case.
+static int macdisk_compareEntries(const void *a, const void *b) {
+  const MacdiskListEntry *x = a;
+  const MacdiskListEntry *y = b;
+  bool xFolder = (x->flags & MACDISK_ENTRY_FOLDER) != 0;
+  bool yFolder = (y->flags & MACDISK_ENTRY_FOLDER) != 0;
+  if (xFolder != yFolder) return xFolder ? -1 : 1;
+  return strcasecmp(x->name, y->name);
+}
+
+static int32_t macdisk_loadListing(const char *path, const char *top) {
+  listingPath[0] = '\0';
+  listingCount = 0;
+  listingFlags = 0;
+  if (listing == NULL) {
+    listing = malloc(MACDISK_LIST_MAX * sizeof(MacdiskListEntry));
+    if (listing == NULL) return MACDISK_ERR_IO;
+  }
+  DIR dir;
+  FRESULT fr = f_opendir(&dir, path);
+  if (fr != FR_OK) return macdisk_pathResult(fr);
+  uint32_t sorted = 0;  // where the sorted entries start
+  if (strcasecmp(path, top) != 0) {
+    MacdiskListEntry *e = &listing[listingCount++];
+    memset(e, 0, sizeof(*e));
+    snprintf(e->name, sizeof(e->name), "..");
+    e->flags = MACDISK_ENTRY_FOLDER;
+    sorted = 1;
+  }
+  // A name's path: path, '/' unless path is "/", the name.
+  size_t prefix = (path[1] == '\0') ? 1 : strlen(path) + 1;
+  while ((fr = f_readdir(&dir, &fileInfo)) == FR_OK &&
+         fileInfo.fname[0] != '\0') {
+    if (fileInfo.fname[0] == '.') continue;
+    if (listingCount == MACDISK_LIST_MAX) {
+      listingFlags |= MACDISK_LIST_MORE;
+      break;
+    }
+    MacdiskListEntry *e = &listing[listingCount++];
+    memset(e->name, 0, sizeof(e->name));
+    strncpy(e->name, fileInfo.fname, sizeof(e->name) - 1);
+    bool folder = (fileInfo.fattrib & AM_DIR) != 0;
+    e->flags = folder ? MACDISK_ENTRY_FOLDER
+                      : (macdisk_isRw(fileInfo.fname) ? MACDISK_ENTRY_RW : 0u);
+    if (prefix + strlen(fileInfo.fname) >= MACDISK_PATH_SIZE) {
+      e->flags |= MACDISK_ENTRY_TOO_LONG;
+    }
+    if (folder) {
+      e->bytes = 0;
+    } else {
+      e->bytes = (fileInfo.fsize > 0xFFFFFFFFu) ? 0xFFFFFFFFu
+                                                : (uint32_t)fileInfo.fsize;
+    }
+  }
+  f_closedir(&dir);
+  if (fr != FR_OK) {
+    listingCount = 0;
+    return macdisk_pathResult(fr);
+  }
+  qsort(listing + sorted, listingCount - sorted, sizeof(MacdiskListEntry),
+        macdisk_compareEntries);
+  snprintf(listingPath, sizeof(listingPath), "%s", path);
+  return MACDISK_OK;
+}
+
+static int32_t macdisk_list(uint32_t first, uint32_t options,
+                            const uint16_t *data, uint32_t dataBytes) {
+  if (!cardMounted) return MACDISK_ERR_NOMEDIUM;
+  if (!macdisk_takePath(data, dataBytes) || !macdisk_checkPath(requestPath)) {
+    return MACDISK_ERR_PARAM;
+  }
+  bool wholeCard = (options & MACDISK_LIST_WHOLE_CARD) != 0;
+  if (wholeCard) {
+    snprintf(topFolder, sizeof(topFolder), "/");
+  } else {
+    macdisk_loadTopFolder();
+  }
+  if (!macdisk_isInside(requestPath, topFolder)) return MACDISK_ERR_PARAM;
+  if (first == 0 || wholeCard != listingWholeCard ||
+      strcmp(requestPath, listingPath) != 0) {
+    int32_t err = macdisk_loadListing(requestPath, topFolder);
+    if (err != MACDISK_OK) return err;
+    listingWholeCard = wholeCard;
+  }
+  if (first != 0 && first >= listingCount) return MACDISK_ERR_PARAM;
+  uint32_t returned = listingCount - first;
+  if (returned > MACDISK_LIST_PAGE) returned = MACDISK_LIST_PAGE;
+
+  uint8_t *out = macdisk_windowBase() + MACDISK_BUFFER_OFFSET;
+  macdisk_writeBe32(out + MACDISK_LIST_TOTAL, listingCount);
+  macdisk_writeBe32(out + MACDISK_LIST_RETURNED, returned);
+  macdisk_writeBe32(out + MACDISK_LIST_FLAGS, listingFlags);
+  for (uint32_t i = 0; i < returned; i++) {
+    const MacdiskListEntry *e = &listing[first + i];
+    uint8_t *entry = out + MACDISK_LIST_ENTRIES + i * MACDISK_LIST_ENTRY_SIZE;
+    memcpy(entry + MACDISK_ENTRY_NAME, e->name, MACDISK_PATH_SIZE);
+    macdisk_writeBe32(entry + MACDISK_ENTRY_FLAGS, e->flags);
+    macdisk_writeBe32(entry + MACDISK_ENTRY_BYTES, e->bytes);
+  }
+  CHANGE_ENDIANESS_BLOCK16(
+      out, MACDISK_LIST_ENTRIES + returned * MACDISK_LIST_ENTRY_SIZE);
+  return MACDISK_OK;
+}
+
+static int32_t macdisk_getSettings(void) {
+  uint8_t *out = macdisk_windowBase() + MACDISK_BUFFER_OFFSET;
+  for (uint8_t key = 0; key < MACDISK_KEYS; key++) {
+    uint32_t offset = (key < MACDISK_PATH_KEYS)
+                          ? key * MACDISK_PATH_SIZE
+                          : MACDISK_SETTINGS_RTC_OFFSET +
+                                (key - MACDISK_PATH_KEYS) * MACDISK_PATH_SIZE;
+    char *field = (char *)out + offset;
+    memset(field, 0, MACDISK_PATH_SIZE);
+    strncpy(field, macdisk_setting(key), MACDISK_PATH_SIZE - 1);
+  }
+  macdisk_writeBe32(out + MACDISK_SETTINGS_FD0_SLOT_OFFSET, fd0Slot);
+  CHANGE_ENDIANESS_BLOCK16(out, MACDISK_SETTINGS_SIZE);
+  return MACDISK_OK;
+}
+
+// An RTC key's value, as macdisk.h's MACDISK_KEY_RTC_* say.
+static bool macdisk_checkRtcValue(uint32_t key, const char *value) {
+  size_t len = strlen(value);
+  if (key == MACDISK_KEY_RTC_ENABLED) {
+    return strcmp(value, "true") == 0 || strcmp(value, "false") == 0;
+  }
+  if (key == MACDISK_KEY_NTP_HOST) {
+    const char *allowed =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-";
+    return len > 0 && strspn(value, allowed) == len;
+  }
+  if (len == 0 || len > 5 || strspn(value, "0123456789") != len) return false;
+  long port = strtol(value, NULL, 10);
+  return port >= 1 && port <= 65535;
+}
+
+// Stored with the type of its default, as md-drives-emulator stores them.
+static int macdisk_putSetting(uint32_t key, const char *value) {
+  SettingsContext *ctx = aconfig_getContext();
+  if (key == MACDISK_KEY_RTC_ENABLED) {
+    return settings_put_bool(ctx, settingKeys[key], strcmp(value, "true") == 0);
+  }
+  if (key == MACDISK_KEY_NTP_PORT) {
+    return settings_put_integer(ctx, settingKeys[key], atoi(value));
+  }
+  return settings_put_string(ctx, settingKeys[key], value);
+}
+
+static int32_t macdisk_setSetting(uint32_t key, const uint16_t *data,
+                                  uint32_t dataBytes) {
+  if (key >= MACDISK_KEYS) return MACDISK_ERR_PARAM;
+  if (!cardMounted) return MACDISK_ERR_NOMEDIUM;
+  // The path, or an RTC key's value.
+  if (!macdisk_takePath(data, dataBytes)) return MACDISK_ERR_PARAM;
+  if (key >= MACDISK_PATH_KEYS) {
+    if (!macdisk_checkRtcValue(key, requestPath)) return MACDISK_ERR_PARAM;
+  } else if (key == MACDISK_KEY_FOLDER) {
+    if (!macdisk_checkPath(requestPath)) return MACDISK_ERR_PARAM;
+    DIR dir;
+    FRESULT fr = f_opendir(&dir, requestPath);
+    if (fr != FR_OK) return macdisk_pathResult(fr);
+    f_closedir(&dir);
+  } else if (requestPath[0] != '\0') {
+    if (!macdisk_checkPath(requestPath)) return MACDISK_ERR_PARAM;
+    macdisk_loadTopFolder();
+    if (!macdisk_isInside(requestPath, topFolder)) return MACDISK_ERR_PARAM;
+    FRESULT fr = f_stat(requestPath, &fileInfo);
+    if (fr != FR_OK) return macdisk_pathResult(fr);
+    if (fileInfo.fattrib & AM_DIR) return MACDISK_ERR_PARAM;
+  }
+
+  // The flash is written only for a change: it takes ~45 ms.
+  if (strcmp(macdisk_setting((uint8_t)key), requestPath) != 0) {
+    if (macdisk_putSetting(key, requestPath) != 0 ||
+        settings_save(aconfig_getContext(), true) != 0) {
+      return MACDISK_ERR_IO;
+    }
+  }
+  if (key == MACDISK_KEY_FOLDER) {
+    listingPath[0] = '\0';  // its ".." may have changed
+    return MACDISK_OK;
+  }
+  for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) {
+    if (macdisk_unitKey(unit) != key) continue;
+    (void)macdisk_ejectUnit(unit);
+    if (requestPath[0] != '\0') {
+      snprintf(unitPath, sizeof(unitPath), "%s", requestPath);
+      macdisk_openUnit(unit);
+    }
+  }
+  return MACDISK_OK;
+}
+
 void macdisk_init(void) {
   WRITE_AND_SWAP_LONGWORD(macdisk_windowBase(), MACDISK_ID_OFFSET,
                           (uint32_t)MACDISK_ID);
@@ -403,21 +729,39 @@ void macdisk_setCardStatus(uint32_t status) {
   WRITE_AND_SWAP_LONGWORD(macdisk_windowBase(), MACDISK_CARD_OFFSET, status);
 }
 
-void macdisk_mountAll(const char *folder) {
-  snprintf(mountFolder, sizeof(mountFolder), "%s", folder);
+static void macdisk_mountFrom(const char *folder, bool byName) {
   snprintf(pramPath, sizeof(pramPath), "%s/%s", folder, MACDISK_PRAM_FILE);
   cardMounted = true;
   macdisk_setCardStatus(MACDISK_CARD_OK);
   for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) {
-    macdisk_mountUnit(unit, folder);
+    macdisk_mountUnit(unit, byName ? folder : NULL);
   }
+}
+
+void macdisk_mountAll(const char *folder) { macdisk_mountFrom(folder, false); }
+
+void macdisk_mountByName(const char *folder) {
+  macdisk_mountFrom(folder, true);
 }
 
 void macdisk_mountEmpty(void) {
   if (!cardMounted) return;
   for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) {
-    if (!units[unit].open) macdisk_mountUnit(unit, mountFolder);
+    if (!units[unit].open) macdisk_mountUnit(unit, NULL);
   }
+}
+
+bool macdisk_stepFd0(uint8_t *slot) {
+  if (!cardMounted || units[MACDISK_UNIT_FD0].open) return false;
+  for (uint8_t step = 1; step <= MACDISK_FD0_SLOTS; step++) {
+    uint8_t next = (uint8_t)((fd0Slot - 1 + step) % MACDISK_FD0_SLOTS + 1);
+    if (macdisk_setting(MACDISK_KEY_FD0_SLOT(next))[0] == '\0') continue;
+    fd0Slot = next;
+    *slot = next;
+    macdisk_mountUnit(MACDISK_UNIT_FD0, NULL);
+    return units[MACDISK_UNIT_FD0].open;
+  }
+  return false;
 }
 
 void macdisk_unmountAll(void) {
@@ -445,7 +789,11 @@ void macdisk_commandCb(TransmissionProtocol *protocol, uint16_t *payloadPtr) {
   uint16_t unit = (uint16_t)(d3 & 0xFFFFu);
   uint16_t count = (uint16_t)(d3 >> 16);
   uint32_t lba = TPROTO_GET_NEXT32_PAYLOAD_PARAM32(payloadPtr);
-  const uint32_t headerBytes = 16;  // token, d3, d4, d5
+  // A send_write_sync's data, after the token, d3, d4 and d5. payloadPtr is
+  // at d4: d5 follows, then the data.
+  const uint32_t headerBytes = 16;
+  uint32_t size = tprotocol_clamp_payload_size(protocol->payload_size);
+  uint32_t dataBytes = (size > headerBytes) ? size - headerBytes : 0;
 #if defined(_DEBUG) && (_DEBUG != 0)
   uint32_t startedUs = time_us_32();
 #endif
@@ -455,14 +803,10 @@ void macdisk_commandCb(TransmissionProtocol *protocol, uint16_t *payloadPtr) {
     case MACDISK_CMD_READ:
       result = macdisk_readSectors(unit, count, lba);
       break;
-    case MACDISK_CMD_WRITE: {
-      uint32_t size = tprotocol_clamp_payload_size(protocol->payload_size);
-      uint32_t dataBytes = (size > headerBytes) ? size - headerBytes : 0;
-      // payloadPtr is at d4: d5 follows, then the data.
+    case MACDISK_CMD_WRITE:
       result =
           macdisk_writeSectors(unit, count, lba, payloadPtr + 4, dataBytes);
       break;
-    }
     case MACDISK_CMD_EJECT:
       result = macdisk_ejectUnit(unit);
       break;
@@ -472,19 +816,28 @@ void macdisk_commandCb(TransmissionProtocol *protocol, uint16_t *payloadPtr) {
     case MACDISK_CMD_PRAM_READ:
       result = macdisk_readPram();
       break;
-    case MACDISK_CMD_PRAM_WRITE: {
-      uint32_t size = tprotocol_clamp_payload_size(protocol->payload_size);
-      uint32_t dataBytes = (size > headerBytes) ? size - headerBytes : 0;
+    case MACDISK_CMD_PRAM_WRITE:
       result = macdisk_writePram(payloadPtr + 4, dataBytes);
       break;
-    }
+    case MACDISK_CMD_LIST:
+      result = macdisk_list(d3, lba, payloadPtr + 4, dataBytes);
+      break;
+    case MACDISK_CMD_GET_SETTINGS:
+      result = macdisk_getSettings();
+      break;
+    case MACDISK_CMD_SET_SETTING:
+      result = macdisk_setSetting(d3, payloadPtr + 4, dataBytes);
+      break;
     default:
       result = MACDISK_ERR_PARAM;
       break;
   }
   WRITE_AND_SWAP_LONGWORD(macdisk_windowBase(), MACDISK_RESULT_OFFSET,
                           (uint32_t)result);
-  if (protocol->command_id != MACDISK_CMD_TIME) cardActivity = true;
+  if (protocol->command_id != MACDISK_CMD_TIME &&
+      protocol->command_id != MACDISK_CMD_GET_SETTINGS) {
+    cardActivity = true;
+  }
 #if defined(_DEBUG) && (_DEBUG != 0)
   if (commandLogHead - commandLogTail < MACDISK_LOG_ENTRIES) {
     MacdiskLogEntry *e = &commandLog[commandLogHead % MACDISK_LOG_ENTRIES];
@@ -509,8 +862,9 @@ bool macdisk_consumeCardActivity(void) {
 
 void macdisk_printAnswered(void) {
 #if defined(_DEBUG) && (_DEBUG != 0)
-  static const char *const names[] = {"READ", "WRITE",     "EJECT",
-                                      "TIME", "PRAM_READ", "PRAM_WRITE"};
+  static const char *const names[] = {"READ", "WRITE",        "EJECT",
+                                      "TIME", "PRAM_READ",    "PRAM_WRITE",
+                                      "LIST", "GET_SETTINGS", "SET_SETTING"};
   while (commandLogTail != commandLogHead) {
     const MacdiskLogEntry *e =
         &commandLog[commandLogTail % MACDISK_LOG_ENTRIES];

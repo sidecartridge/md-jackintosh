@@ -17,10 +17,12 @@
 // the app folder, it creates two sets of images filled with a pattern drawn
 // from each sector's number, mounts each set in the three units in turn, and
 // sends the units the commands the Mac ROM sends, as macdisk_commandCb()
-// receives them from chandler. Set A is writable: an 800K and a 400K raw
-// floppy and a fragmented raw hard disk. Set B is read-only: a MacBinary II
-// DiskCopy 4.2 800K floppy, a DiskCopy 4.2 400K floppy and a raw hard disk
-// marked read-only on the card. Then it mounts the card's own images again.
+// receives them from chandler. The units take each set's images by name,
+// whatever the settings say (macdisk_mountByName()). Set A is writable: an
+// 800K and a 400K raw floppy, named *.rw, and a fragmented raw hard disk. Set
+// B is read-only: a MacBinary II DiskCopy 4.2 800K floppy, a DiskCopy 4.2 400K
+// floppy and a raw hard disk marked read-only on the card. Then it mounts the
+// card's own images again.
 //
 // It runs either at the RP's boot, when DEVDISKTEST_TRIGGER is in the app
 // folder (the file is deleted first, so a test that hangs runs once), or when

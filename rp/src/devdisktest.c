@@ -59,10 +59,13 @@ typedef struct {
 
 static const char *const dtUnitNames[MACDISK_UNITS] = {"FD0", "FD1", "HD0"};
 
-// Set A, writable: the floppies a Plus takes, and a fragmented hard disk.
+// Set A, writable: the floppies a Plus takes (named *.rw, or they would be
+// read-only), and a fragmented hard disk.
 static const DtImage dtSetA[MACDISK_UNITS] = {
-    {"FD0.IMG", DT_FD800_SECTORS, 0xA0F00000u, MACDISK_FORMAT_RAW, 0, 0, false},
-    {"FD1.IMG", DT_FD400_SECTORS, 0xA0F10000u, MACDISK_FORMAT_RAW, 0, 0, false},
+    {"FD0.IMG.rw", DT_FD800_SECTORS, 0xA0F00000u, MACDISK_FORMAT_RAW, 0, 0,
+     false},
+    {"FD1.IMG.rw", DT_FD400_SECTORS, 0xA0F10000u, MACDISK_FORMAT_RAW, 0, 0,
+     false},
     {"HD0.IMG", DT_HD_SECTORS, 0xA0D00000u, MACDISK_FORMAT_RAW, 0, 0, false},
 };
 // Set B, read-only: the DiskCopy formats, and a raw image marked read-only.
@@ -347,12 +350,28 @@ static bool dt_createImage(const char *dir, const DtImage *img, bool fragment) {
   return fr == FR_OK;
 }
 
+// Deletes the files in dir, so that what an earlier run left there (another
+// name for the same unit) cannot be mounted in place of the new images.
+static void dt_emptyFolder(const char *dir) {
+  DIR d;
+  FILINFO info;
+  if (f_opendir(&d, dir) != FR_OK) return;
+  while (f_readdir(&d, &info) == FR_OK && info.fname[0] != '\0') {
+    if (info.fattrib & AM_DIR) continue;
+    snprintf(path, sizeof(path), "%s/%s", dir, info.fname);
+    (void)f_chmod(path, 0, AM_RDO);
+    (void)f_unlink(path);
+  }
+  f_closedir(&d);
+}
+
 static bool dt_createSet(const char *dir, const DtImage set[MACDISK_UNITS]) {
   FRESULT fr = f_mkdir(dir);
   if (fr != FR_OK && fr != FR_EXIST) {
     dt_check(false, "create %s (%d)", dir, (int)fr);
     return false;
   }
+  dt_emptyFolder(dir);
   bool ok = true;
   for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) {
     bool fragment = (set == dtSetA) && unit == MACDISK_UNIT_HD0;
@@ -364,7 +383,7 @@ static bool dt_createSet(const char *dir, const DtImage set[MACDISK_UNITS]) {
 
 static void dt_mountSet(const char *dir) {
   macdisk_unmountAll();
-  macdisk_mountAll(dir);
+  macdisk_mountByName(dir);
   for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) writeCount[unit] = 0;
 }
 
@@ -684,7 +703,7 @@ static void dt_run(const char *folder) {
     for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) {
       dt_checkOnCard(unit, &dtSetA[unit]);
     }
-    macdisk_mountAll(setA);
+    macdisk_mountByName(setA);
     for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) {
       uint32_t bad = 0;
       int32_t result = MACDISK_OK;

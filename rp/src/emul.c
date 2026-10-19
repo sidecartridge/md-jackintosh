@@ -9,6 +9,7 @@
 #include "emul.h"
 
 #include <stdint.h>
+#include <string.h>
 
 // inclusw in the C file to avoid multiple definitions
 #include "aconfig.h"
@@ -49,6 +50,13 @@ enum {
 
 // Keep active loop or exit
 static bool keepActive = true;
+
+// A Mac session: the ST's last hello was not followed by
+// CHANDLER_SET_SHARED_VAR. The TOS boot screen sends one right after its
+// hello; the Jackintosh ROM never does.
+static bool macSession = false;
+// A short SELECT press in a Mac session, for the main loop.
+static bool fd0StepPending = false;
 
 // Polling tick used as the network poll callback so command handling stays
 // alive during multi-second WiFi operations.
@@ -103,13 +111,46 @@ static void emul_serviceFor(uint32_t ms) {
 // After the ST's hello: the Mac ROM's next boot finds its floppies back in
 // their drives, though its Restart or Shut Down ejected them.
 static void emul_serveStBoot(void) {
-  if (chandler_consumeStBoot()) macdisk_mountEmpty();
+  if (chandler_consumeStBoot()) {
+    macSession = true;
+    macdisk_mountEmpty();
+  }
+  if (chandler_consumeSharedVarSet()) macSession = false;
+}
+
+// A short SELECT press. In a Mac session it puts FD0's next slot in the drive
+// if the drive is empty, and does nothing if it holds a disk: swapping it
+// under a mounted volume would corrupt it. Otherwise (before the hello, under
+// TOS, without a usable card) it restarts the RP.
+static void emul_selectShortPress(void) {
+  if (macSession) {
+    fd0StepPending = true;
+    return;
+  }
+  reset_device();
 }
 
 static void __not_in_flash_func(emul_pollTick)(void) {
   chandler_loop();
   emul_serveStBoot();
   select_poll();
+}
+
+// The RTC settings (macdisk.h's RTC keys), read at the RP's start. The network
+// is only for NTP, so with the RTC off it is not brought up at all.
+static bool emul_startRtc(void) {
+  SettingsConfigEntry *enabled =
+      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_RTC_ENABLED);
+  if (enabled != NULL && strcmp(enabled->value, "false") == 0) return false;
+  SettingsConfigEntry *host =
+      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_RTC_NTP_HOST);
+  SettingsConfigEntry *port =
+      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_RTC_NTP_PORT);
+  long portValue = (port != NULL) ? strtol(port->value, NULL, 10) : 0;
+  ntp_setServer(
+      (host != NULL && host->value[0] != '\0') ? host->value : NTP_HOST,
+      (portValue >= 1 && portValue <= 65535) ? (uint16_t)portValue : NTP_PORT);
+  return true;
 }
 
 // Reset the ST and start Booster: what the boot screen asked for.
@@ -264,11 +305,12 @@ void emul_start() {
 
   // 4. Configure the SELECT button before anything slow (the SD card, the
   // network), so a press is seen from here on; its edge interrupt catches one
-  // made while a wait cannot poll. A short press restarts the RP. A press held
+  // made while a wait cannot poll. A short press restarts the RP, or in a Mac
+  // session steps FD0's slots (emul_selectShortPress()). A press held
   // for SELECT_LONG_RESET is a factory reset: the global settings are erased
   // and the RP restarts into Booster, which then clears every app's settings.
   select_configure();
-  select_setResetCallback(reset_device);
+  select_setResetCallback(emul_selectShortPress);
   select_setLongResetCallback(reset_deviceAndEraseFlash);
 
   // 5. Init the sd card
@@ -320,7 +362,9 @@ void emul_start() {
   SettingsConfigEntry *wifiMode =
       settings_find_entry(gconfig_getContext(), PARAM_WIFI_MODE);
   wifi_mode_t wifiModeValue = WIFI_MODE_STA;
-  if (wifiMode == NULL) {
+  if (!emul_startRtc()) {
+    DPRINTF("RTC off in the settings: no Wi-Fi, no NTP.\n");
+  } else if (wifiMode == NULL) {
     DPRINTF("No WiFi mode found in the settings. No initializing.\n");
   } else {
     wifiModeValue = (wifi_mode_t)atoi(wifiMode->value);
@@ -383,6 +427,16 @@ void emul_start() {
     // every pass: the ST spins on its answer, so the loop never waits.
     chandler_loop();
     emul_serveStBoot();
+    if (fd0StepPending) {
+      fd0StepPending = false;
+      uint8_t slot = 0;
+      if (macdisk_stepFd0(&slot)) {
+        DPRINTF("SELECT: FD0 holds slot %u\n", (unsigned)slot);
+#ifdef BLINK_H
+        blink_startCountSequence(slot);  // N flashes for slot N
+#endif
+      }
+    }
 #ifdef BLINK_H
     // After the answer: on a Pico W every LED write goes to the Wi-Fi chip.
     if (macdisk_consumeCardActivity()) blink_activityPulse();
