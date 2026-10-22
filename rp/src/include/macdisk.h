@@ -302,8 +302,9 @@ void macdisk_mountByName(const char *folder);
  *
  * Call at every ST boot, once its hello is answered (chandler_consumeStBoot()):
  * a Mac's Restart or Shut Down ejects its floppies, and its next boot must
- * find them in their drives. Units that hold an image are left as they are.
- * FD0 is looked up from its current slot.
+ * find them in their drives. Units that hold an image are left as they are,
+ * except FD0 on a slot other than 1: it goes back to slot 1, and an image
+ * from another slot is ejected first.
  */
 void macdisk_mountEmpty(void);
 

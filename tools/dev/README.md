@@ -277,7 +277,8 @@ python3 tools/dev/disktest_harness.py                        # the disk self-tes
   checks the settings did not change. `--set` writes the settings flash (each change erases and
   programs its 4 KB sector): it sets FD1 to an image of `FOLDER` and checks the swap, puts FD1
   back, sets the slot after FD0's current one, injects a hello, ejects FD0 and presses SELECT,
-  and checks the slot went in; then it puts every setting back and restarts the RP, so the
+  and checks the slot went in, then injects another hello and checks FD0 is back on slot 1;
+  then it puts every setting back and restarts the RP, so the
   units and FD0's current slot are as at power-on. BUSY reports the slowest command the RP has
   answered, which the Mac ROM's timeout must cover.
 

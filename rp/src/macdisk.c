@@ -789,6 +789,12 @@ void macdisk_mountByName(const char *folder) {
 
 void macdisk_mountEmpty(void) {
   if (!cardMounted) return;
+  // FD0 is slot 1 at every boot, as the menu shows it: a slot SELECT stepped
+  // to goes, and its image with it.
+  if (fd0Slot != 1) {
+    (void)macdisk_ejectUnit(MACDISK_UNIT_FD0);
+    fd0Slot = 1;
+  }
   for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) {
     if (!units[unit].open) macdisk_mountUnit(unit, NULL);
   }

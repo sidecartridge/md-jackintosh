@@ -76,7 +76,7 @@ the menu. Nothing is mounted until it is chosen: a drive with no image chosen st
 
 | Unit | Mac drive | Images |
 |------|-----------|--------|
-| **FD0** | Internal floppy | Ten slots: slot 1 at power-on, the others stepped with **`SELECT`** |
+| **FD0** | Internal floppy | Ten slots: slot 1 at every boot, the others stepped with **`SELECT`** |
 | **FD1** | External floppy | One image |
 | **HD0** | Hard disk | One image |
 
@@ -207,7 +207,8 @@ Jackintosh ROMs never run the cartridge's code, so with them the page never appe
 
 Pressing the reset button on your Atari shows the Jackintosh menu again and boots the Mac with the
 same disks. A floppy the Mac ejected (Restart and Shut Down eject them) is put back in its drive,
-so the next boot finds it. FD0 keeps the slot `SELECT` last put in.
+so the next boot finds it. FD0 goes back to slot 1: a floppy `SELECT` put in from another slot is
+taken out, and slot 1's image goes in.
 
 ## Power cycling
 

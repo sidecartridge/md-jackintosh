@@ -104,8 +104,9 @@ Three units of 512-byte sectors: FD0 (internal floppy), FD1 (external floppy), H
 
 - **What is mounted.** The app settings name the images as full paths: FD0's ten slots (`FD0`,
   `FD0_2` to `FD0_10`), `FD1` and `HD0`. At power-on FD0 holds slot 1; a unit whose setting is
-  empty stays empty. At every ST boot, `macdisk_mountEmpty()` mounts again each unit an EJECT
-  emptied (a Mac's Restart and Shut Down eject its floppies), FD0 from its current slot.
+  empty stays empty. At every ST boot, `macdisk_mountEmpty()` puts FD0 back on slot 1 (ejecting
+  an image from another slot) and mounts again each unit an EJECT emptied (a Mac's Restart and
+  Shut Down eject its floppies), so the unit, the slot GET_SETTINGS answers and the menu agree.
 - **Formats**, told from the content: raw, DiskCopy 4.2 (data from `$54`), MacBinary II around a
   DiskCopy 4.2 image. DiskCopy images are read-only: a write would leave the header's checksum
   stale, and the tags are not served.

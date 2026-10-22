@@ -43,7 +43,8 @@ with them.
           image of FOLDER is swapped at once (its change counter moves, a
           floppy not named *.rw is read-only) and put back; the slot after
           FD0's current one set to an image leaves FD0 alone, and after a
-          hello (injected) and an eject a short SELECT press puts it in FD0.
+          hello (injected) and an eject a short SELECT press puts it in FD0,
+          and a second hello puts FD0 back on slot 1.
           Then the settings are put back and the RP restarted, so the units
           and FD0's current slot are as at power-on, and GET is checked again
   BUSY    the slowest command the RP answered since it booted
@@ -610,6 +611,19 @@ def main() -> int:
                           f"slot {nxt} {result_name(dev, got)}, FD0 "
                           f"{'untouched' if alone else 'CHANGED'}; after a hello, an eject and "
                           f"SELECT: slot {now_slot}, FD0 {stepped}")
+
+                    # The ST's next boot puts FD0 back on slot 1, and slot 1's
+                    # image (or none) in the drive.
+                    swd.send_protocol(elf, dev.d("CHANDLER_ST_HELLO"), [])
+                    time.sleep(1.0)
+                    reset = dev.unit(0)
+                    _, _, boot_slot = dev.get_settings()
+                    first = path if nxt == 1 else settings[1]  # MACDISK_KEY_FD0_SLOT(1)
+                    want = image_id(first) if first else 0
+                    ok = (boot_slot == 1 and reset["id"] == want
+                          and bool(reset["flags"] & dev.d("MACDISK_FLAG_INSERTED")) == bool(first))
+                    check("HELLO FD0 slot 1", ok, f"after a hello: slot {boot_slot}, FD0 {reset}, "
+                          f"slot 1 is {first!r}")
 
                 bad = []
                 for key, value in enumerate(settings):

@@ -109,7 +109,8 @@ static void emul_serviceFor(uint32_t ms) {
 }
 
 // After the ST's hello: the Mac ROM's next boot finds its floppies back in
-// their drives, though its Restart or Shut Down ejected them.
+// their drives, though its Restart or Shut Down ejected them, and FD0 on
+// slot 1.
 static void emul_serveStBoot(void) {
   if (chandler_consumeStBoot()) {
     macSession = true;

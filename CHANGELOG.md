@@ -46,7 +46,7 @@ installs from five floppies stepped with SELECT, and Tetris runs.
   answer. In a Mac session a short SELECT press puts FD0's next slot in
   the drive if the drive is empty, and the LED flashes once per slot
   number; with a disk in the drive it does nothing. Outside one it still
-  restarts the RP.
+  restarts the RP. Every ST boot puts FD0 back on slot 1.
 - **The time of day** (`rp/src/ntp.c`): an NTP client that never blocks
   the command channel; TIME `$0703` gives UTC seconds since 1904. The
   chooser's settings turn it on or off and name the server and port
