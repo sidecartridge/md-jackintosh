@@ -132,6 +132,9 @@ back to the main menu.
 | **[M]ac RAM** | All of it (the default), 1024, 2048 or 2560 KB |
 | **[R]ight mouse button** | Off (the default), Command-click or double-click |
 | **[S]creen** | 640x400 (the default), or the Plus's 512x342, centred |
+| **[K]eyboard** (experimental) | US (the default), French, German, Spanish or UK |
+| **Mouse [T]racking** | 1 (slowest) to 10 (fastest), 5 by default; **`SHIFT+T`** steps it down |
+| **Mega STE [P]rocessor** | Only on a Mega STE: 8 MHz (the default), 16 MHz with the cache off, or 16 MHz with the cache on |
 
 The Multi-device keeps them in its flash with the other choices, so they survive power cycles;
 the ROMs read them before the Mac starts.
