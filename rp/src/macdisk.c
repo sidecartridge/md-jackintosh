@@ -43,6 +43,7 @@ typedef struct {
   FSIZE_t dataOffset;  // where sector 0 starts in the file
   uint32_t sectors;
   uint32_t changes;
+  uint32_t imageId;  // MACDISK_UNIT_ID_OFFSET's hash of its path
   uint8_t format;
   bool open;
   bool readOnly;
@@ -151,6 +152,16 @@ static bool macdisk_isRw(const char *name) {
   return len > 3 && strcasecmp(name + len - 3, ".rw") == 0;
 }
 
+// FNV-1a of an image's full path; 0 stands for an empty unit, so never 0.
+static uint32_t macdisk_pathId(const char *path) {
+  uint32_t hash = 0x811C9DC5u;
+  for (const unsigned char *c = (const unsigned char *)path; *c != '\0'; c++) {
+    hash ^= *c;
+    hash *= 16777619u;
+  }
+  return hash != 0 ? hash : 1u;
+}
+
 static void macdisk_publishUnit(uint8_t unit) {
   const MacdiskUnit *u = &units[unit];
   uint32_t flags = 0;
@@ -160,6 +171,9 @@ static void macdisk_publishUnit(uint8_t unit) {
   }
   uint32_t base = MACDISK_UNIT_OFFSET(unit);
   uint8_t *window = macdisk_windowBase();
+  // Before the flags and the counter: whoever sees them move reads the new ID.
+  WRITE_AND_SWAP_LONGWORD(window, MACDISK_UNIT_ID_OFFSET(unit),
+                          u->open ? u->imageId : 0u);
   WRITE_AND_SWAP_LONGWORD(window, base + MACDISK_UNIT_FLAGS, flags);
   WRITE_AND_SWAP_LONGWORD(window, base + MACDISK_UNIT_SECTORS,
                           u->open ? u->sectors : 0u);
@@ -298,6 +312,7 @@ static void macdisk_openUnit(uint8_t unit) {
     return;
   }
   macdisk_setupFastseek(u);
+  u->imageId = macdisk_pathId(unitPath);
   u->open = true;
   u->changes++;
   macdisk_publishUnit(unit);
@@ -759,10 +774,11 @@ void macdisk_setCardStatus(uint32_t status) {
 static void macdisk_mountFrom(const char *folder, bool byName) {
   snprintf(pramPath, sizeof(pramPath), "%s/%s", folder, MACDISK_PRAM_FILE);
   cardMounted = true;
-  macdisk_setCardStatus(MACDISK_CARD_OK);
   for (uint8_t unit = 0; unit < MACDISK_UNITS; unit++) {
     macdisk_mountUnit(unit, byName ? folder : NULL);
   }
+  // Last: CARD_OK tells the Mac the unit table is current.
+  macdisk_setCardStatus(MACDISK_CARD_OK);
 }
 
 void macdisk_mountAll(const char *folder) { macdisk_mountFrom(folder, false); }

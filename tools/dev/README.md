@@ -259,7 +259,8 @@ python3 tools/dev/disktest_harness.py                        # the disk self-tes
   the buffer out of the cartridge window. Its commands share the result slot and the buffer with
   the ST's, so run it with the ST off or idle at the Jackintosh ROM's menu, never while the Mac
   uses its disks. Give it host copies of the images on the card
-  (`--fd0`, `--fd1`, `--hd0`). It checks the identity long, each unit's status against its copy
+  (`--fd0`, `--fd1`, `--hd0`). It checks the identity long, the card's state, each unit's image identity against
+  the path its setting names, each unit's status against its copy
   (format, sectors, read-only), reads the first and the last 32 sectors and `--samples` random
   runs (`--full`: every sector) byte for byte as the 68000 reads them, and checks the refusals:
   past the end, bad counts, an unknown unit or command, a write to a read-only image. `--write`

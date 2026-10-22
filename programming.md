@@ -223,6 +223,7 @@ The ST sees `ROM_IN_RAM` at `$FA0000`-`$FAFFFF`, read-only. The layout comes fro
 | `+$0C` | `MACDISK_ID`, `$4A4B0001` ("JK", contract version 1), from the RP's boot on |
 | `+$10` | The unit table: per unit, flags, sectors, change counter and format |
 | `+$40` | The card's state (`MACDISK_CARD_*`) |
+| `+$44` | Per unit, a long: which image it holds, the FNV-1a hash of the image's full path (never 0), 0 when empty |
 | `+$100` | The buffer: sector data, the PRAM, LIST's and GET_SETTINGS' answers |
 
 The RP keeps the identity, the unit table and the card's state current: the Mac reads them at any
@@ -261,7 +262,12 @@ What each side may assume:
   write or a debug print goes after the answer. The slowest commands measured on the bench: a
   SET that writes the flash and swaps an image, about 120 ms; the first PRAM_WRITE, about 150 ms.
 - **The two sides reboot independently.** The RP rewrites the window when it starts, so the
-  identity and the unit table read as zero until it is back.
+  identity and the unit table read as zero until it is back. It publishes the identity, then the
+  units, then `MACDISK_CARD_OK`: wait for `MACDISK_CARD_OK` before trusting the unit table.
+- **A unit's image identity tells one image from another.** Its change counter restarts when the
+  RP does, so after an RP restart it cannot say whether the drive still holds the same image. The
+  identity is the 32-bit FNV-1a hash (basis `$811C9DC5`, prime 16777619) of the image's full path,
+  written before the unit's flags and change counter.
 
 ## The Atari ST side
 

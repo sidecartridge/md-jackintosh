@@ -213,8 +213,18 @@
 // The microSD card, MACDISK_CARD_*, from the RP's boot on. Anything but
 // MACDISK_CARD_OK means the firmware stopped there: no disks and no network,
 // the LED blinking, until the RP restarts (power, or a short SELECT press).
-// Every disk and PRAM command then answers MACDISK_ERR_NOMEDIUM.
+// Every disk and PRAM command then answers MACDISK_ERR_NOMEDIUM. At the RP's
+// start the identity is published first, then the units, then
+// MACDISK_CARD_OK: wait for MACDISK_CARD_OK before trusting the unit table.
 #define MACDISK_CARD_OFFSET (MACDISK_STATUS_OFFSET + 0x40)
+
+// Which image each unit holds: the 32-bit FNV-1a hash (basis 0x811C9DC5,
+// prime 16777619) of the image's full path, never 0 for an inserted unit (a
+// hash of 0 is published as 1), and 0 for an empty one. It is written before
+// the unit's flags and change counter, so a Mac that sees the counter move
+// after an RP restart can tell the same image from another one.
+#define MACDISK_UNIT_ID_TABLE_OFFSET (MACDISK_STATUS_OFFSET + 0x44)
+#define MACDISK_UNIT_ID_OFFSET(unit) (MACDISK_UNIT_ID_TABLE_OFFSET + (unit) * 4)
 
 // Sector data and the other commands' answers, in the order the 68000 reads
 // them.
@@ -263,7 +273,8 @@ void macdisk_init(void);
  * @brief Publish the card's state at MACDISK_CARD_OFFSET (MACDISK_CARD_*).
  *
  * macdisk_init() publishes MACDISK_CARD_PENDING and macdisk_mountAll()
- * MACDISK_CARD_OK; the app publishes why a card could not be used.
+ * MACDISK_CARD_OK, once every unit is published; the app publishes why a card
+ * could not be used.
  */
 void macdisk_setCardStatus(uint32_t status);
 

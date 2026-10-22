@@ -23,8 +23,11 @@ installs from five floppies stepped with SELECT, and Tetris runs.
   in `.rw`, as in md-drives-emulator), DiskCopy 4.2 and MacBinary II
   DiskCopy 4.2 read-only. The status block at `$FA2300` holds the last
   result, an identity long
-  (`$4A4B0001`) and, per unit, flags, sectors, a change counter and the
-  format; sector data is at `$FA2400`. Writes are synced 3 s after the
+  (`$4A4B0001`) and, per unit, flags, sectors, a change counter, the
+  format and the image's identity (the FNV-1a hash of its full path, 0
+  when empty), so the Mac can tell the same image from another after the
+  RP restarts; the card's state reads OK only once the units are
+  published. Sector data is at `$FA2400`. Writes are synced 3 s after the
   first unsynced one. A unit an EJECT emptied, as a Mac's Restart and
   Shut Down do, is mounted again at the ST's next boot. `macdisk.h` is the
   contract with the ROMs.

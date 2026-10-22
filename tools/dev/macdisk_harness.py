@@ -7,6 +7,9 @@ empty. Give the host's copies of the mounted files with --fd0, --fd1 and
 with them.
 
   ID      the identity long is MACDISK_ID
+  CARD    the card's state is MACDISK_CARD_OK
+  UNIT ID each unit's image identity is the hash of the path its setting
+          names (FD0's current slot), 0 for an empty unit
   STATUS  each unit given is inserted, with the format, sector count and
           read-only flag its host copy implies
   READ    the first and the last MACDISK_MAX_READ_SECTORS of each unit and
@@ -16,9 +19,10 @@ with them.
   RO      a write to a read-only unit is refused and changes nothing
   WRITE   (--write) two sectors of HD0 rewritten, read back, written again (a
           retry), read back, and put back as they were
-  EJECT   (--eject UNIT) the unit empties, its change counter moves once, a
-          second eject succeeds and a read is refused. The unit stays empty
-          until the ST's next boot (CMD_ST_HELLO) mounts it again.
+  EJECT   (--eject UNIT) the unit empties and its identity is 0, its change
+          counter moves once, a second eject succeeds and a read is refused.
+          The unit stays empty until the ST's next boot (CMD_ST_HELLO) mounts
+          it again.
   PRAM    (--pram) PRAM.BIN written, read back, written again (a retry), a
           wrong size refused, and put back as it was. If there was none, it is
           left all zeros, which the Mac takes for PRAM never set.
@@ -89,6 +93,14 @@ def be32(data: bytes, offset: int) -> int:
     return struct.unpack_from(">I", data, offset)[0]
 
 
+def image_id(path: str) -> int:
+    """macdisk.h's unit image identity: FNV-1a of the path, never 0."""
+    h = 0x811C9DC5
+    for b in path.encode("cp437"):
+        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+    return h or 1
+
+
 def host_layout(path: str) -> dict:
     """Format, data offset and sectors of a host image, by the rules in
     macdisk.h, written again here to check the firmware against."""
@@ -137,7 +149,9 @@ class Device:
         base = self.d("MACDISK_UNIT_TABLE_OFFSET") + index * self.d("MACDISK_UNIT_ENTRY_SIZE")
         raw = st_view(swd.read_memory(self.window + base, 16))
         flags, sectors, changes, fmt = struct.unpack(">IIII", raw)
-        return {"flags": flags, "sectors": sectors, "changes": changes, "format": fmt}
+        image = self.st_ulong(self.d("MACDISK_UNIT_ID_TABLE_OFFSET") + 4 * index)
+        return {"flags": flags, "sectors": sectors, "changes": changes, "format": fmt,
+                "id": image}
 
     def command(self, cmd: str | int, unit: int, count: int = 0, lba: int = 0,
                 data: bytes = b"") -> int:
@@ -324,6 +338,26 @@ def main() -> int:
         ident = dev.st_ulong(dev.d("MACDISK_ID_OFFSET"))
         check("ID", ident == dev.d("MACDISK_ID"),
               f"0x{ident:08x}, want 0x{dev.d('MACDISK_ID'):08x}")
+        card = dev.st_ulong(dev.d("MACDISK_CARD_OFFSET"))
+        check("CARD", card == dev.d("MACDISK_CARD_OK"), f"{card}, want MACDISK_CARD_OK")
+
+        # Each unit's image identity: the hash of the path its setting names,
+        # 0 when it is empty.
+        got, values, slot = dev.get_settings()
+        if got == ok_code:
+            keys = (slot, dev.d("MACDISK_KEY_FD1"), dev.d("MACDISK_KEY_HD0"))
+            bad = []
+            for i, name in enumerate(UNITS):
+                s = status[i]
+                inserted = s["flags"] & dev.d("MACDISK_FLAG_INSERTED")
+                want = image_id(values[keys[i]]) if inserted else 0
+                if s["id"] != want:
+                    bad.append(f"{name} 0x{s['id']:08x}, want 0x{want:08x}"
+                               f" ({values[keys[i]]!r})")
+            check("UNIT ID", not bad, "; ".join(bad) or ", ".join(
+                f"{n} 0x{status[i]['id']:08x}" for i, n in enumerate(UNITS)))
+        else:
+            check("UNIT ID", False, f"GET_SETTINGS answered {result_name(dev, got)}")
 
         for i, name in enumerate(UNITS):
             s = status[i]
@@ -423,7 +457,8 @@ def main() -> int:
             read = dev.command("MACDISK_CMD_READ", unit, 1, 0)
             want_changes = before["changes"] + (1 if before["flags"] else 0)
             ok = (first == ok_code and second == ok_code and mid["flags"] == 0
-                  and mid["sectors"] == 0 and mid["changes"] == want_changes
+                  and mid["sectors"] == 0 and mid["id"] == 0
+                  and mid["changes"] == want_changes
                   and after["changes"] == want_changes
                   and read == dev.d("MACDISK_ERR_NOMEDIUM"))
             check(f"EJECT {args.eject}", ok, f"before {before}, after {after}, "
@@ -541,6 +576,7 @@ def main() -> int:
                     readonly = bool(now["flags"] & dev.d("MACDISK_FLAG_READONLY"))
                     stored = dev.get_settings()[1][fd1]
                     ok = (got == ok_code and stored == path and now["changes"] != before["changes"]
+                          and now["id"] == image_id(path)
                           and now["flags"] & dev.d("MACDISK_FLAG_INSERTED")
                           and (rw or readonly))
                     check("SET FD1", ok, f"{path}: {result_name(dev, got)}, unit {now}, "
@@ -550,8 +586,8 @@ def main() -> int:
                     swd.send_protocol(elf, dev.d("CHANDLER_ST_HELLO"), [])  # as at a boot
                     time.sleep(1.0)
                     back = dev.unit(1)
-                    same = {k: back[k] for k in ("flags", "sectors", "format")} == \
-                        {k: before[k] for k in ("flags", "sectors", "format")}
+                    same = {k: back[k] for k in ("flags", "sectors", "format", "id")} == \
+                        {k: before[k] for k in ("flags", "sectors", "format", "id")}
                     check("SET FD1 back", got == ok_code and same,
                           f"{settings[fd1]!r}: {result_name(dev, got)}, after a hello {back}")
 
@@ -568,7 +604,8 @@ def main() -> int:
                     _, _, now_slot = dev.get_settings()
                     ok = (got == ok_code and alone and ejected == ok_code and now_slot == nxt
                           and stepped["flags"] & dev.d("MACDISK_FLAG_INSERTED")
-                          and stepped["sectors"] == now["sectors"])
+                          and stepped["sectors"] == now["sectors"]
+                          and stepped["id"] == image_id(path))
                     check("SET and SELECT FD0", ok,
                           f"slot {nxt} {result_name(dev, got)}, FD0 "
                           f"{'untouched' if alone else 'CHANGED'}; after a hello, an eject and "
