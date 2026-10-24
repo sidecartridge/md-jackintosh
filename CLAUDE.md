@@ -46,7 +46,7 @@ Build flow (orchestrated by `build.sh`). Every script stops at the first failing
 - `.github/workflows/build.yml` builds `pico_w` on every pull request, release and debug.
 - `.github/workflows/release.yml` triggers on `v*` tags: builds, attaches UF2 + JSON to the GitHub Release, uploads to `s3://atarist.sidecartridge.com/`.
 - `make tag` tags HEAD with the contents of `version.txt` and pushes the tag (which triggers release). It first runs `make check-release`, which stops unless `ACONFIG_VERSION_NUMBER` in `rp/src/include/aconfig.h` is 1: it is 2 while developing, and the repo owner sets it back to 1 on `main` before tagging. **Don't tag**: a change lands as a `version.txt` bump plus a `CHANGELOG.md` entry; tagging and releasing are the repo owner's call.
-- The app's release UUID is the `APP_UUID` secret of the GitHub repository, and only `release.yml` uses it, on the tag `make tag` pushes. Every other build (`build.yml` on pull requests, `tools/dev/flash.sh`, local `build.sh` runs) uses the development UUID `44444444-4444-4444-8444-444444444444`, so there is no release-UUID build to make or test before the tag.
+- The app's release UUID is the `APP_UUID` secret of the GitHub repository. CI builds with it, on pull requests (`build.yml`) and on the tag `make tag` pushes (`release.yml`), and falls back to the development UUID `44444444-4444-4444-8444-444444444444` where the secret is not available (a fork's pull request). Local builds (`tools/dev/flash.sh`, `build.sh` by hand) use the development UUID. Nothing needs building or testing locally with the release UUID.
 - `upload_s3.sh <file>` is a manual one-off uploader; needs `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
 
 ### Tests / verification
