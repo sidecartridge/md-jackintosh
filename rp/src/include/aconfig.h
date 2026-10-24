@@ -60,7 +60,8 @@ enum {
   ACONFIG_BUFFER_SIZE = 4096,
   ACONFIG_MAGIC_NUMBER = 0x1234,
   // 2 while developing: settings saved as 1 by the template build sharing the
-  // development UUID hold FOLDER /test. A release goes back to 1.
+  // development UUID hold FOLDER /test. A release goes back to 1: make tag
+  // refuses anything else.
   ACONFIG_VERSION_NUMBER = 0x0002
 };
 
