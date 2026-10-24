@@ -5,8 +5,8 @@ swd — read, check and drive a running RP2040 through the Debug Probe.
 Single-file, stdlib-only (Python >= 3.10). Runs OpenOCD with the CMSIS-DAP
 probe for each command. It never uses the firmware's own services: memory is
 read through the debug port while the CPU keeps running, so it works for any
-microfirmware from the template and on a hung RP. Only `key`, `app` and
-`inject` need firmware help, the debug-only mailbox in devhooks.h.
+microfirmware from the template and on a hung RP. Only `app` and `inject`
+need firmware help, the debug-only mailbox in devhooks.h.
 
 Usage:
     python3 tools/dev/swd.py running ELF [--timeout S]
@@ -16,11 +16,8 @@ Usage:
     python3 tools/dev/swd.py program ELF
     python3 tools/dev/swd.py resume
     python3 tools/dev/swd.py reset
-    python3 tools/dev/swd.py screen OUT.png [--elf ELF] [--scale N]
     python3 tools/dev/swd.py shared [--elf ELF] [--all]
-    python3 tools/dev/swd.py text [--elf ELF]
     python3 tools/dev/swd.py select short|long|release [--hold-ms MS] [--force]
-    python3 tools/dev/swd.py key CHAR [--shift] [--scan N] [--elf ELF]
     python3 tools/dev/swd.py app NAME [--elf ELF]
     python3 tools/dev/swd.py inject COMMAND_ID [WORD ...] [--elf ELF]
     python3 tools/dev/swd.py crash [--elf ELF]
@@ -38,16 +35,10 @@ tools/dev/builds/elf. `program` flashes the ELF and resets the RP; `reset` only
 resets it. Both reset the whole chip through the watchdog, never with OpenOCD's
 `reset` (see chip_reset).
 
-`screen` renders the 320x200 framebuffer of the 64 KB cartridge window
-(DISPLAY_BUFFER_OFFSET in display.h, CHANDLER_FRAMEBUFFER_OFFSET in chandler.h) as a PNG: the setup menu as the ST shows
-it. `shared` prints the random token, the token seed and the indexed shared
+`shared` prints the random token, the token seed and the indexed shared
 variables, named after the `*_SVAR_*` / `*_SHARED_VARIABLE_*` indexes in
-rp/src/include. Both find the window from the ELF's `__rom_in_ram_start__`;
-without `--elf` they use the cached ELF whose build ID matches the RP.
-
-`text` prints the terminal's character buffer (the `screen` array of term.c),
-which is the setup menu as text; the bottom status line is drawn straight to
-the framebuffer and only shows in `screen`.
+rp/src/include. It finds the window from the ELF's `__rom_in_ram_start__`;
+without `--elf` it uses the cached ELF whose build ID matches the RP.
 
 `ring` decodes the commands the ST sent from the ROM3 capture ring
 (commemul.c), without halting and on a release build as on a debug one: the
@@ -57,8 +48,8 @@ defines and chandler's framework commands in rp/src/include), the payload
 size, the random token, the first 32-bit parameters in the order the RP's
 TPROTO_GET_PAYLOAD_PARAM32 reads them, and whether its checksum holds.
 `--mark` remembers the position (in tools/dev/logs/ring.mark), and
-`--since-mark` shows only what arrived after it. Commands sent with `key` or
-`inject` go through the mailbox, not the bus, so they never show here.
+`--since-mark` shows only what arrived after it. Commands sent with `inject`
+go through the mailbox, not the bus, so they never show here.
 
 `select` presses the SELECT button: it forces the pin's input high through the
 GPIO input override (IO_BANK0 GPIOn_CTRL.INOVER) for the hold time, so the
@@ -67,10 +58,10 @@ firmware sees a real press without any code of its own. `short` holds 300 ms,
 `--force`, because in this firmware it erases the app's saved settings
 (reset_deviceAndEraseFlash). `release` clears a stuck override.
 
-`key`, `app` and `inject` need a debug build: they write the debug mailbox
+`app` and `inject` need a debug build: they write the debug mailbox
 (rp/src/include/devhooks.h) and wait until the main loop acknowledges it.
-`key` sends a keystroke as the ST would, `inject` any protocol command with the
-given 16-bit payload words after the random token, and `app` an app command
+`inject` sends any protocol command with the given 16-bit payload words after
+the random token, as if the ST had sent it, and `app` an app command
 named by a DEVHOOKS_APP_<NAME> define in rp/src/include, with optional 16-bit
 payload words, for example `app my_command 16`. The template defines none: an
 app adds its own, and registers the handler with devhooks_setAppHandler().
@@ -107,12 +98,10 @@ import subprocess
 import sys
 import tempfile
 import time
-import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 INCLUDE_DIR = os.path.join(REPO, "rp", "src", "include")
-FB_WIDTH, FB_HEIGHT = 320, 200
 VTOR = 0xE000ED08
 DHCSR = 0xE000EDF0
 DHCSR_S_HALT = 1 << 17
@@ -127,7 +116,7 @@ MAILBOX_SYMBOL = "devhooksMailbox"
 MAILBOX_MAGIC = 0x444B4831
 MB_SEQ, MB_ACK, MB_KIND, MB_RESULT, MB_CMD, MB_SIZE, MB_PAYLOAD = (
     4, 8, 12, 16, 20, 22, 24)
-MAILBOX_WORDS = 16
+MAILBOX_WORDS = 520  # DEVHOOKS_PAYLOAD_WORDS
 KIND_PROTOCOL, KIND_APP = 1, 2
 WATCHDOG_REASON = 0x40058008
 WATCHDOG_SCRATCH0 = 0x4005800C
@@ -141,8 +130,8 @@ COUNTERS = ("chandlerHandled", "chandlerDropped", "chandlerRepeated",
             "chandlerMaxBusyUs", "chandlerGapUs", "chandlerMaxGapUs",
             "chandlerQuietUs", "chandlerMaxQuietUs", "chandlerFramePolls",
             "chandlerPollUs")
-POSTMORTEM_VARIABLES = ("keepActive", "menuScreenActive", "protocolPending",
-                        "incrementalCmdCount", "commReadIdx") + COUNTERS
+POSTMORTEM_VARIABLES = ("keepActive", "protocolPending", "incrementalCmdCount",
+                        "commReadIdx") + COUNTERS
 BUILD_ID_SYMBOL = "release_build_id"
 # The ROM3 capture ring (commemul.c): its DMA channel's registers, and where
 # `ring --mark` keeps its position. RING_PARAMS 32-bit parameters are printed.
@@ -183,11 +172,8 @@ def openocd_command(work_area: bool = False) -> list[str]:
     # the next cyw43_arch_poll() HardFaulted. Every run that does not write
     # flash gets a 4 KB work area in SCRATCH_X instead, which is core 1's
     # stack in a firmware that never starts core 1 (core 0's stack guard is at
-    # the bottom of SCRATCH_Y, above it), backed up and restored. In a build
-    # with HTTPS downloads core 0's stack runs on down through SCRATCH_X; the
-    # work area is only used with the cores halted, and the backup puts the
-    # stack back. Flash writes keep the default: they halt the cores first and
-    # reset the chip after.
+    # the bottom of SCRATCH_Y, above it), backed up and restored. Flash writes
+    # keep the default: they halt the cores first and reset the chip after.
     if not work_area:
         cmd += ["-c", "rp2040.core0 configure -work-area-phys 0x20040000 "
                       "-work-area-size 0x1000 -work-area-backup 1"]
@@ -422,61 +408,6 @@ def cartridge_window(elf: str) -> int:
     if not base:
         raise SwdError(f"{elf} has no __rom_in_ram_start__")
     return base[0]
-
-
-def write_png(path: str, width: int, height: int, rows: list[bytes]) -> None:
-    """8-bit greyscale PNG."""
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        body = tag + data
-        return (struct.pack(">I", len(data)) + body +
-                struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
-    raw = b"".join(b"\0" + row for row in rows)
-    png = (b"\x89PNG\r\n\x1a\n" +
-           chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)) +
-           chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
-    with open(path, "wb") as f:
-        f.write(png)
-
-
-def cmd_screen(args: argparse.Namespace) -> int:
-    elf = matching_elf(args.elf)
-    base = cartridge_window(elf)
-    # display.h defines the offset as CHANDLER_FRAMEBUFFER_OFFSET (chandler.h).
-    defs = include_defines()
-    offset = defs["DISPLAY_BUFFER_OFFSET"]
-    size = defs["DISPLAY_BUFFER_SIZE"]
-    if size != FB_WIDTH * FB_HEIGHT // 8:
-        raise SwdError(f"framebuffer is {size} bytes, expected 320x200 mono")
-    fb = read_memory(base + offset, size)
-    stride = FB_WIDTH // 8
-    rows = []
-    for y in range(FB_HEIGHT):
-        line = fb[y * stride:(y + 1) * stride]
-        # Bit 7 of each byte is the leftmost of its eight pixels. Lit pixels
-        # are drawn black on white, as on the ST's monochrome screen.
-        pixels = bytes(0 if (line[x >> 3] >> (7 - (x & 7))) & 1 else 255
-                       for x in range(FB_WIDTH))
-        scaled = bytes(p for p in pixels for _ in range(args.scale))
-        rows.extend([scaled] * args.scale)
-    write_png(args.out, FB_WIDTH * args.scale, FB_HEIGHT * args.scale, rows)
-    lit = sum(bin(b).count("1") for b in fb)
-    print(f"wrote {args.out} ({FB_WIDTH * args.scale}x{FB_HEIGHT * args.scale}, "
-          f"{lit} pixels lit) from 0x{base + offset:08x}")
-    return 0
-
-
-def cmd_text(args: argparse.Namespace) -> int:
-    elf = matching_elf(args.elf)
-    sym = elf_symbols(elf, "screen").get("screen")
-    if not sym or not sym[1]:
-        raise SwdError(f"{os.path.basename(elf)} has no term screen buffer")
-    defs = include_defines()
-    width = defs.get("TERM_SCREEN_SIZE_X", 40)
-    data = read_memory(sym[0], sym[1])
-    for y in range(sym[1] // width):
-        row = data[y * width:(y + 1) * width]
-        print("".join(chr(c) if 32 <= c < 127 else " " for c in row).rstrip())
-    return 0
 
 
 def svar_names() -> dict[int, list[str]]:
@@ -915,19 +846,6 @@ def send_protocol(elf: str, command_id: int, words: list[int]) -> None:
     raise SwdError("the firmware kept another command pending")
 
 
-def cmd_key(args: argparse.Namespace) -> int:
-    elf = matching_elf(args.elf)
-    defs = include_defines()
-    if len(args.char) != 1:
-        raise SwdError("CHAR must be one character")
-    command_id = (defs["APP_TERMINAL"] << 8) | defs["APP_TERMINAL_KEYSTROKE"]
-    param = (ord(args.char) | (args.scan << defs["TERM_KEYBOARD_SCAN_SHIFT"]) |
-             ((1 if args.shift else 0) << defs["TERM_KEYBOARD_SHIFT_SHIFT"]))
-    send_protocol(elf, command_id, [param & 0xFFFF, param >> 16])
-    print(f"key {args.char!r} sent")
-    return 0
-
-
 def cmd_inject(args: argparse.Namespace) -> int:
     elf = matching_elf(args.elf)
     send_protocol(elf, int(args.command_id, 0),
@@ -1193,13 +1111,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="allow a long press")
     se.set_defaults(func=cmd_select)
 
-    k = sub.add_parser("key", help="send a keystroke as the ST would")
-    k.add_argument("char")
-    k.add_argument("--shift", action="store_true")
-    k.add_argument("--scan", type=int, default=0)
-    k.add_argument("--elf")
-    k.set_defaults(func=cmd_key)
-
     ap = sub.add_parser("app", help="send an app command (DEVHOOKS_APP_*)")
     ap.add_argument("name")
     ap.add_argument("words", nargs="*", help="16-bit payload words")
@@ -1220,16 +1131,6 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--elf")
     pm.add_argument("--leave-halted", action="store_true")
     pm.set_defaults(func=cmd_postmortem)
-
-    sc = sub.add_parser("screen", help="render the framebuffer as a PNG")
-    sc.add_argument("out")
-    sc.add_argument("--elf")
-    sc.add_argument("--scale", type=int, default=2)
-    sc.set_defaults(func=cmd_screen)
-
-    tx = sub.add_parser("text", help="print the terminal screen as text")
-    tx.add_argument("--elf")
-    tx.set_defaults(func=cmd_text)
 
     sh = sub.add_parser("shared", help="print the shared variables")
     sh.add_argument("--elf")

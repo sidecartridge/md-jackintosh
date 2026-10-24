@@ -249,10 +249,10 @@ number.
 */
 
 /* The most files and directories open at once, each entry about 16 bytes of
-/  RAM. The template opens at most one file (download.c) and keeps no directory
-/  open; 8 leaves room for an app's own. An app sets it to the most it keeps
-/  open at once, with room for what the ST can hold open through it
-/  (md-drives-emulator uses 32). When the table is full, f_open and f_opendir
+/  RAM. This app keeps up to three disk images open (macdisk.c), opens PRAM.BIN
+/  for one command at a time and keeps no directory open; 8 leaves room. An
+/  app sets it to the most it keeps open at once, with room for what the ST
+/  can hold open through it (md-drives-emulator uses 32). When the table is full, f_open and f_opendir
 /  return FR_TOO_MANY_OPEN_FILES: report that as its own condition, not as a
 /  missing file or a disk error. */
 #define FF_FS_LOCK 8

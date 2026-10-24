@@ -1,1121 +1,316 @@
----
-layout: default
-title: Programming SidecarTridge Multi-device
-nav_order: 7
-nav_exclude: false
-parent: SidecarTridge Multi-device
-redirect_from:
-  - /programming
-  - /progamming/
----
+# Programming md-jackintosh
 
-# Programming SidecarTridge Multi-device
-{: .no_toc }
+This guide is for developers of md-jackintosh, the SidecarTridge Multi-device microfirmware that
+serves the disks, the clock and the parameter RAM of the Jackintosh ROMs. It covers what this
+repository adds to the
+[Multi-device microfirmware template](https://github.com/sidecartridge/md-microfirmware-template):
+how the parts fit, the modules, the memory, the cartridge window and the commands. For what
+every microfirmware shares (the development environment, the template's modules, the command
+protocol in general) see the
+[official programming documentation](https://docs.sidecartridge.com/sidecartridge-multidevice/programming/).
 
-This section provides developers with in-depth guidance on programming the Multi-device board. It mainly covers the development of new applications or "microfirmware apps" for the RP2040 microcontroller. The guide is structured to help you understand the architecture of the Multi-device board, the microfirmware apps, and how to set up your development environment.
+`CLAUDE.md` has the build gotchas and the rules learned on hardware, `AGENTS.md` copy-pasteable
+commands and a symptom → fix table, and `tools/dev/README.md` the debug tools.
 
-{: .warning}
-This guide applies to the new version 2.0 of the firmware in beta stage.
+## How the parts fit
 
-{: .note}
-Starting with template `v1.1.0` the framework adopts the architecture used in `md-drives-emulator`: 192 KB of general-purpose RAM, a single 64 KB ROM4 bank served entirely by chained DMA, and a polled ROM3 DMA-ring command channel dispatched through `chandler`. The "Microfirmware design" sections below describe this layout. Apps written against earlier templates must migrate (see `CHANGELOG.md`).
+| Part | Where | What it does |
+| --- | --- | --- |
+| The Jackintosh ROMs | [md-jackintosh-roms](https://github.com/sidecartridge/md-jackintosh-roms), built at <https://jackintosh.sidecartridge.com>, in the TOS sockets: served by the [SidecarTridge TOS Emulator](https://sidecartridge.com/products/sidecartridge-tos-atari-st/), or burnt into EPROMs or EEPROMs | Boot the ST or STE as a Mac Plus, with no TOS. Draw the disk menu. Send the commands below over the cartridge port, starting with `CMD_ST_HELLO`. |
+| The RP firmware | `rp/src` | Serves the Mac's disk images from the microSD card, the time of day from NTP and the parameter RAM; keeps the menu's choices in the app settings. |
+| The cartridge code | `target/atarist/src/main.s` | Runs only under TOS, that is, without the Jackintosh ROMs, when the app has nothing to serve: a page that says the app works only with them, and sends the user to Booster or the GEM desktop. The Jackintosh ROMs never run it. |
 
+The ROMs and this firmware meet at three things, which together are the contract between the two
+repositories: the command protocol, the cartridge window layout in `rp/src/include/chandler.h`,
+and `rp/src/include/macdisk.h`. Change any of them only after agreeing it with md-jackintosh-roms.
+`macdisk.h` is the source of truth for the commands, their payloads, the results and the window
+layout; this guide summarises it.
 
+## Development environment
 
-<details open markdown="block">
-  <summary>
-    Table of contents
-  </summary>
-  {: .text-delta }
-1. TOC
-{:toc}
-</details>
+Follow the [official documentation](https://docs.sidecartridge.com/sidecartridge-multidevice/programming/)
+for the Pico SDK, the ARM GNU Toolchain 14.2 (`PICO_TOOLCHAIN_PATH`) and
+[atarist-toolkit-docker](https://github.com/sidecartridge/atarist-toolkit-docker) (`stcmd`). The
+SDK paths (`PICO_SDK_PATH`, `PICO_EXTRAS_PATH`, `FATFS_SDK_PATH`) default to the submodules in
+this repository.
 
-## Setting up the development environment
+On top of that, md-jackintosh needs:
 
-### Requirements
+- **A Raspberry Pi Debug Probe** on the Multi-device: the RP side cannot run off-hardware, and
+  every tool in `tools/dev/` works through it.
+- **An Atari ST or STE with the Jackintosh ROMs** in its TOS sockets, and Mac disk images on the
+  microSD card. The [SidecarTridge TOS Emulator](https://sidecartridge.com/products/sidecartridge-tos-atari-st/)
+  makes this practical: it serves ROM images from its own storage, so a new ROM build, or TOS
+  again, is a load away rather than a chip to burn and swap. Hatari can show the TOS boot screen
+  only: it has no Multi-device.
+- **Booster** on the Multi-device, from its debug build, with the `DEV APP` launched once, so the
+  development UUID `44444444-4444-4444-8444-444444444444` has a settings sector.
 
-{: .warning}
-If you want to contribute to the projects as a developer, you'll need a Raspberry Pi Pico Debug Probe.
-
-- The [atarist-toolkit-docker](https://github.com/sidecartridge/atarist-toolkit-docker) is pivotal. Familiarize yourself with its installation and usage.
-
-- A `git` client, command line or GUI, your pick.
-
-- A Makefile attuned with GNU Make.
-
-- Visual Studio Code is highly recommended if you want to debug the code. You can find the configuration files in the `.vscode` folder. 
-
-- An Atari ST/STE/MegaST/MegaSTE computer. You can also use an emulator such as Hatari or STEEM for testing purposes, but you cannot really test any real functionality of the app without a real computer.
-
-### Setup a Raspberry Pi Pico development environment from scratch
-
-If you are not familiar with the development on the Raspberry Pi Pico or RP2040, we recommend you to follow the [Getting Started with Raspberry Pi Pico](https://datasheets.raspberrypi.org/pico/getting-started-with-pico.pdf) guide. This guide will help you to setup the Raspberry Pi Pico development environment from scratch.
-
-We also think it's very important to setup the picoprobe debugging hardware. The picoprobe is a hardware debugger that will allow you to debug the code running on the Raspberry Pi Pico. You can find more information in this two excellent tutorials from Shawn Hymel:
-- [Raspberry Pi Pico and RP2040 - C/C++ Part 1: Blink and VS Code](https://www.digikey.es/en/maker/projects/raspberry-pi-pico-and-rp2040-cc-part-1-blink-and-vs-code/7102fb8bca95452e9df6150f39ae8422)
-- [Raspberry Pi Pico and RP2040 - C/C++ Part 2 Debugging with VS Code](https://www.digikey.es/en/maker/projects/raspberry-pi-pico-and-rp2040-cc-part-2-debugging-with-vs-code/470abc7efb07432b82c95f6f67f184c0)
-
-To support the debugging the SidecarTridge has four pins that are connected to the picoprobe hardware debugger. These pins are:
-- UART TX: This pin is used to send the debug information from the RP2040 to the picoprobe hardware debugger.
-- UART RX: This pin is used to send the debug information from the picoprobe hardware debugger to the RP2040.
-- GND: Two ground pins. One MUST connect to the GND of the Raspberry Pi Pico W (the middle connector between DEBUG and SWCLK and SWDIO) and the other MUST connect to the GND of the picoprobe hardware debugger. Don't let this pins floating, otherwise the debugging will not work.
-
-Also a good tutorial about setting up a debugging environment with the picoprobe can be found in the [Raspberry Pi Debug Probe](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html) tutorial.
-
-Trying to develop software for this microcontroller without the right environment is frustrating and a waste of time. So please, take your time to setup the development environment properly. It will save you a lot of time in the future.
-
-#### Configure environment variables
-
-The following environment variables are required to be set:
-
-- `PICO_SDK_PATH`: The path to the Raspberry Pi Pico SDK.
-- `PICO_EXTRAS_PATH`: The path to the Raspberry Pi Pico Extras SDK.
-- `FATFS_SDK_PATH`: The path to the FatFS SDK.
-
-This repository contains subrepos pointing to these SDKs in root folder.
-
-All the compile, debug and build scripts use these environment variables to locate the SDKs. So it's very important to set them properly. An option would be to set them in your `.bashrc` file if you are using Bash, or in your `.zshrc` file if you are using ZSH. 
-
-#### Configure Visual Studio Code
-
-To configure Visual Studio Code to work with the Raspberry Pi Pico, please follow the [Raspberry Pi Pico and RP2040 - C/C++ Part 2 Debugging with VS Code](https://www.digikey.es/en/maker/projects/raspberry-pi-pico-and-rp2040-cc-part-2-debugging-with-vs-code/470abc7efb07432b82c95f6f67f184c0) tutorial.
-
-
-**Linux/macOS**
-```sh
-export ARM_GDB_PATH=/path/to/your/arm-toolchain
-export PICO_OPENOCD_PATH=/path/to/openocd/tcl
-```
-
-**Windows (PowerShell)**
-```powershell
-$env:ARM_GDB_PATH="C:\Path\to\your\arm-toolchain"
-$env:PICO_OPENOCD_PATH="C:\Path\to\openocd\tcl"
-```
-
-**Windows (CMD)**
-```cmd
-set ARM_GDB_PATH=C:\Path\to\your\arm-toolchain
-set PICO_OPENOCD_PATH=C:\Path\to\openocd\tcl
-```
-
-#### Install Visual Studio Code extensions
-
-- [C/C++ Extension Pack](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools-extension-pack)
-- [CMake](https://marketplace.visualstudio.com/items?itemName=twxs.cmake)
-- [CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools)
-- [Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug)
-
-## Architecture review
-
-Before starting with the programming of the Multi-device board, it is important to understand the two basic ROM emulation modes available and describe in detail in the section [Architecture and Design](/sidecartridge-multidevice/architecture_and_design/#the-multi-device-board-from-the-atari-st-perspective). To summarize the two modes:
-
-- Full ROM emulation mode: the Atari ST effortlessly reads the shared RAM memory as if perusing through a full address range of the ROM memory expansion, void of any perceptible differences. The Atari ST is NOT aware of the existence of the Multi-device.
-- Hybrid ROM emulation mode: the Atari ST accesses the shared RAM memory but only a specific subrange of addresses of the ROM memory expansion. The other subranges are allocated to implement a command protocol between the host and the microcontroller, fostering an interactive session with applications running on the RP2040. The Atari ST is aware of the existence of the Multi-device.
-
-## The Microfirmware apps
-
-### What is a Microfirmware app?
-
-The Microfirmware app is designed to run as a stand alone rp2040/rp235x plus the computer side firmware that communicates with it. The key components include:  
-
-- **Microfirmware app Core**  
-  The heart of the system, responsible for handling the micro SD card, communicating with the remote computer and providing the web interface if needed.  
-
-- **Global Settings**  
-  Stored in flash memory, these settings apply to the entire device and its apps. The microfirmware app does only read the settings, it does not modify them.
-
-- **Local Settings**  
-  Each app has its own isolated configuration stored in flash memory, ensuring app-specific settings remain independent. This section is read and written by the app.
-
-- **Computer firmware**  
-  The Booster app uses the remote computer as the terminal and implements the logic to communicate with the microfirmware app. Since it runs in ROM, it can be challenging to debug and develop it. Try to put all the debugging code in the microfirmware app and use the computer as a terminal. 
-
-### General Memory Map  
-
-The Pico W and Pico 2W feature a **2MB flash memory**, structured as follows:  
-
-```plaintext
-+-----------------------------------------------------+
-|                                                     |
-|              MICROFIRMWARE APP (1152K)              |  0x10000000
-|          Active microfirmware flash space           |
-|                                                     |
-+-----------------------------------------------------+
-...
-+-----------------------------------------------------+
-|                                                     |
-|                  CONFIG FLASH (120K)                |  0x101E0000
-|             Microfirmwares configurations           |
-|                                                     |
-+-----------------------------------------------------+
-|                                                     |
-|              GLOBAL LOOKUP TABLE (4K)               |  0x101FE000
-|  Microfirmwares mapping to configuration sectors    |
-|                                                     |
-+-----------------------------------------------------+
-|                                                     |
-|              GLOBAL SETTINGS (4K)                   |  0x101FF000
-|           Device-wide configurations                |
-|                                                     |
-+-----------------------------------------------------+
-```
-
-## How to Create a New Firmware Project Using `md-microfirmware-template`
-
-This guide walks you through the steps to clone and configure a new firmware project for the SidecarTridge Multi-device platform, using `md-rtc-emulator` as an example. You can find the template repository in [https://github.com/sidecartridge/md-microfirmware-template](https://github.com/sidecartridge/md-microfirmware-template)
-
-### 1. **Create a GitHub Repository from the Template**  
-
-![Clone template](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-1.png)
-
-1. Navigate to the [`md-microfirmware-template`](https://github.com/sidecartridge/md-microfirmware-template) repository.
-2. Click the green **“Use this template”** button and select **“Create a new repository”**.
-3. Set the repository name to `md-rtc-emulator` (or any other descriptive name).
-4. Ensure visibility is set to **Public** or **Private** as needed.
-5. Click **“Create repository”**.
-
-![Clone template 2](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-2.png)
-
-### 2. **Clone Your New Repository Locally**  
-
-![Clone template 3](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-3.png)
-
-Pick the URL of the new repository you just created.
-
-![Clone template 4](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-4.png)
-
-Clone your new repo using SSH or HTTPS:
+## Building
 
 ```bash
-git clone git@github.com:sidecartridge/md-rtc-emulator.git
-cd md-rtc-emulator
-```
-
-![Clone template 5](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-5.png)
-
-### 3. **Initialize Git Submodules**  
-
-
-Run the following commands to initialize all required submodules:
-
-```bash
-git submodule init
-git submodule update --init --recursive
-```
-
-This pulls in essential dependencies like:
-- `pico-sdk`
-- `pico-extras`
-- `fatfs-sdk`
-
-![Clone template 5.1](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-5.1.png)
-
-
-### 4. **Build the Project**  
-
-The main build script is `build.sh`, located in the root directory of the project executes both `buid.sh` scripts in the `/rp` and `/target` folders. The script in the `/rp` folder builds the microfirmware app for the RP2040, while the script in the `/target` folder builds the computer firmware for the target computer.
-
-The parameters for the build script are:
-1. The target device. In this version it can be `pico_w`.
-2. The build type. It can be `debug` or `release`. `debug` will create a version with debug symbols and output traces through the UART. `release` will create a version without debug symbols and output traces.
-3. The UUID of the app. This is a valid UUID v4 that will be used to identify the app. It must be unique for each app. The UUID is used to create the lookup table in the flash memory and to create the app info file. During development time, you can use the UUID `44444444-4444-4444-8444-444444444444` to test the app. 
-
-```bash
+# ./build.sh <board_type> <build_type> <app_uuid>
+./build.sh pico_w release 44444444-4444-4444-8444-444444444444
 ./build.sh pico_w debug 44444444-4444-4444-8444-444444444444
 ```
 
-![Clone template 5.2](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-5.2.png)
-
-and after a few seconds, you will see the build process output in the terminal.
-
-![Clone template 5.3](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-5.3.png)
-
-In the `/dist` folder, you will find:
-- the `44444444-4444-4444-8444-444444444444.uf2` binary file with the microfirmware app. 
-- the `44444444-4444-4444-8444-444444444444.json` file with the app information. This file is used by the Booster app to identify the app and show it in the list of apps.
-- the `44444444-4444-4444-8444-444444444444.md5` file with the md5 checksum of the binary file. This file is used by the Booster app to verify the integrity of the binary file.
-
-![Clone template 5.4](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-5.4.png)
-
-The developer can now deploy the uf2 file to the Raspberry Pi Pico W using the `picotool` command line tool. For example:
-
-```bash
-picotool load dist/44444444-4444-4444-8444-444444444444.uf2
-```
-
-And rebooting the board connected to the computer will load the new firmware if the uf2 file is valid and in the Booster app the developer has selected the option to launch the `DEV APP`
-
-But this is not a very quick way to develop a firmware. It's much easier to use the `picoprobe` hardware debugger and Visual Studio code to debug the code. 
-
-### 5. **Open the Project in VS Code**  
-
-![Clone template 6](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-6.png)
-
-Open the project folder in **Visual Studio Code** or **VS Code Insiders** using the entry in the menu `File` → `Add Folder to Workspace...` and select the folder you just cloned.
-
-![Clone template 7](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-7.png)
-
-Use the **CMake Tools** extension to select a build environment:
-- Open the **command palette** → “CMake: Select a Kit”
-- Choose a compiler (e.g., `GCC 14.2.1 arm-none-eabi`)
-
-Ensure that the `Auto Save` option is enabled for smooth development.
-
-![Clone template 8](/sidecartridge-multidevice/assets/images/md-microfirmware-template-howto-8.png)
-
-### 6. **Adjust the debugging options in Visual Studio code**  
-
-The `.vscode` folder contains the configuration files for Visual Studio Code. **Please modify them as follows**:
-
-- `launch.json`: Modify the `gdbPath` property to point to the `arm-none-eabi-gdb` file in your computer.
-- `launch.json`: Modify the `searchDir` property to point to the `/tcl` folder inside the `openocd` project in your computer.
-- `settings.json`: Modify the `cortex-debug.gdbPath` property to point to the `arm-none-eabi-gdb` file in your computer.
-
-These variables allow the debugger to **automatically find GDB and OpenOCD** without modifying the `launch.json` file every time you switch environments.
-
-## Microfirmware design
-
-### Libraries and components  
-
-#### External Libraries  
-
-These libraries are in different repositories and are included as submodules:  
-
-- Pico-SDK: The official Raspberry Pi Pico SDK, providing essential libraries and tools for development.
-- Pico-Extras: A collection of additional libraries and utilities for the Pico platform, enhancing functionality and ease of use.
-- [no-OS-FatFS-SD-SDIO-SPI-RPi-Pico](https://github.com/carlk3/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico): A library for interfacing with micro SD cards using the SPI protocol, enabling file system access and management.
-
-#### Internal Libraries  
-
-These libraries are part of the `rp` project and are included in the repository:  
-
- - httpc: A lightweight HTTP client library for making requests to web servers, used for fetching updates and resources.
-- settings: The `rp-settings` library.
-- u8g2: A graphics library for rendering text and images on various display types, used for the external display support in the Booster Core.
-
-### Project structure
-
-#### Two different architectures
-
-The project is structure in two very different folders with code:
-
-- `/rp`: where the code deployed in the RP2040 is located. This code is compiled and linked with the RP2040 SDK.
-- `/target`: where the code for the target computer is located. The spirit of this folder is contain the code that will be compiled for the remote computer target. In this project the code is for `atarist`, so a folder `/target/atarist` is created. The code in this folder is compiled with the `atarist-toolkit-docker` project. This project is a docker image that contains all the tools needed to compile the code for the Atari ST/STE/MegaST/MegaSTE computers.
-
-The binary file generated by the `build.sh` file in the `/target/atarist` folder must create a C array that should be included in the `/rp/src/include` folder with the filename `target_firmware.h`. The binary content of this array should be copied to the `ROM_IN_RAM` section of the RAM. 
-
-The goal of this architecture is to have a clean separation between the code that runs in the RP2040 and the code that runs in the remote computer. Starting in version 2 of the firmware we will try to put as much code as possible in the `rp` folder. In 2025 is much easier to develop code for the RP2040 than for the Atari ST/STE/MegaST/MegaSTE computers. Hence, the code for the remote computers (Atari ST or any other future computers that we want to support) should be as minimal as possible and strictly focused on implementing the emulation of the targe device (ROM, Floppy, HD, RTC, Network, etc) and the communication with the RP2040.
-
-#### The RP2040 and RP235x codebase
-
-The code in the `/rp` folder is the code that will be compiled and linked with the RP2040 SDK. This code is responsible for handling the micro SD card, communicating with the remote computer, networking and providing the web interface if needed. 
-
-Apart from the libraries described in the previous sections (`Pico-SDK`, `Pico-Extras`, `no-OS-FatFS-SD-SDIO-SPI-RPi-Pico`, `httpc`, `settings` and `u8g2`), the code in the `/rp` folder is composed os several boilerplate modules that are used to implement the basic features of the microfirmware app. These modules are:
-
-##### aconfig.c
-
-This module is responsible for handling the configuration of the microfirmware app. It uses the `settings` library to store and retrieve the configuration settings. The configuration settings are stored in flash memory and are used to configure the microfirmware app.
-
-Each app has its own configuration settings. To avoid misconfigurations during upgrades or downgrades, the list of default settings is stored in the `defaultEntries` array in this file. It is mandatory to define here the default settings for the app.
-
-In the template app there is only an example of the settings:
-
-```c
-static SettingsConfigEntry defaultEntries[] = {
-    {ACONFIG_PARAM_FOLDER, SETTINGS_TYPE_STRING, "/test"},
-    {ACONFIG_PARAM_MODE, SETTINGS_TYPE_INT, "255"},  // 255: Menu mode
-};
-```
-
-The local settings has to be initialized in the `main.c` file of the app once we have already verified that the app uuid key of the app exists and it is correct. The `CURRENT_APP_UUID_KEY` is the uuid of the app that is being executed.
-
-The `aconfig_init` function will check if the app uuid key exists in the lookup table. If it does not exist, it will return an error and the app will be redirected to the booster. If it exists, it will check if the settings are already initialized. If they are not initialized, it will initialize them with the default values defined in the `defaultEntries` array.
-
-```c
-// If we are here, it means the app uuid key is correct. So we can read or
-// initialize the app settings
-err = aconfig_init(CURRENT_APP_UUID_KEY);
-switch (err) {
-  case ACONFIG_SUCCESS:
-    DPRINTF("App settings found and already initialized\n");
-    break;
-  case ACONFIG_APPKEYLOOKUP_ERROR:
-    // The app key is not found in the lookup table. Go to booster.
-    DPRINTF("App key not found in the lookup table. Go to BOOSTER.\n");
-    reset_jump_to_booster();
-    // We should never reach this point
-    break;
-  case ACONFIG_INIT_ERROR:
-    // No settings found. First time the app is executed? Then initialize the
-    // settings
-    DPRINTF("App settings not initialized. Initialize them first\n");
-    err = settings_save(aconfig_getContext(), true);
-    if (err < 0) {
-      // Something went wrong saving the settings. Go to booster.
-      DPRINTF("Error saving settings. Go to BOOSTER.\n");
-      reset_jump_to_booster();
-      // We should never reach this point
-    }
-    // Show the settings
-    settings_print(aconfig_getContext(), NULL);
-    break;
-}
-```
-
-After the succesful initialization of the settings, the app can use the `aconfig_getContext()` function to get the context of the settings and use it to read and write the settings, as usual.
-
-```c
-  SettingsConfigEntry *appMode =
-      settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_MODE);
-  if (appMode == NULL) {
-    DPRINTF(
-        "ACONFIG_PARAM_MODE not found in the configuration.\n");
-  }
-```
-
-##### blink.c
-
-This module is responsible for handling the blinking of the LED on the Raspberry Pi Pico W. It uses the `pico-sdk` library to control the GPIO pins and implement the blinking functionality. The LED is used to indicate the status of the microfirmware app.
-
-##### display.c
-
-This module is responsible for handling the external display. It uses the `u8g2` library to control the display and implement the functionality. 
-
-In this version it wraps the `u8g2` library to provide a simple interface to draw text, scroll up texts and draw images on the display. Since it is focused in the first version for Atari ST computers, it creates a 320x200 monochrome display with a 8x8 font, indpendently of the real display used: Low res or High res. We can think this as a frame buffer that will be used to draw the text and images. The code in the `/target` folder will be responsible for reading this frame buffer and sending the data to the Atari ST computer memory screen.
-
-The `display.c` should be wrapped by a more high level display manager that will be responsible for handling no only the text but also the keyboard input and the mouse input, if necessary. In the template app this is in the `display_term.c` file.
-
-##### display_term.c
-
-This module is responsible for implementing a simple terminal interface to display text on the external display. It uses the `display.c` module to draw the text and implement the functionality, and also the `tprotocol.h` header file to implement the communication protocol with the remote computer; the core of the microfirmware app.
-
-This modelo implements the commands that listen for remote keystrokes and convert them into ASCII characters that combined form the terminal commands. In this version the terminal commands are very simple and only implement the basic functionality to manage the local settings, exit the app or launch the Booster app.
-
-##### download.c
-
-As the name suggests, this module is responsible for downloading any kind of file from a remote HTTP server and saving it to the micro SD card, through `tmp.download` in the app folder. It uses lwIP's HTTP client (`httpc/`). `https://` needs a build with HTTPS (`APP_DOWNLOAD_HTTPS=1 ./build.sh ...`); the default build refuses it with `DOWNLOAD_HTTPSNOTBUILT_ERROR`. The server's certificate is not verified.
-
-The download runs asynchronously: `download_poll()` never waits, so call it from the main loop, which keeps serving the ST, while the status is `DOWNLOAD_STATUS_STARTED` or `DOWNLOAD_STATUS_IN_PROGRESS`. It follows redirects and retries a failed hop by itself. Only a 2xx response reaches the file; on any failure the temporary file is deleted, the status is `DOWNLOAD_STATUS_FAILED`, and `download_finish()` returns the reason (also `download_getError()` and `download_getHttpStatus()`). A sketch:
-
-```c
-  download_setFilepath("http://example.com/files/GAME.ST");  // saved as GAME.ST
-  if (download_start() != DOWNLOAD_OK) {
-    DPRINTF("Cannot start: %d\n", download_getError());
-  }
-  while (getKeepActive()) {
-    chandler_loop();  // keep answering the ST
-    term_loop();
-    switch (download_getStatus()) {
-      case DOWNLOAD_STATUS_STARTED:
-      case DOWNLOAD_STATUS_IN_PROGRESS:
-        download_poll();
-        break;
-      case DOWNLOAD_STATUS_COMPLETED:
-        download_finish();
-        download_confirm();  // tmp.download -> GAME.ST
-        download_setStatus(DOWNLOAD_STATUS_IDLE);
-        break;
-      case DOWNLOAD_STATUS_FAILED:
-        DPRINTF("Download failed: %d (HTTP %d)\n", download_finish(),
-                download_getHttpStatus());
-        download_setStatus(DOWNLOAD_STATUS_IDLE);
-        break;
-      default:
-        break;
-    }
-  }
-```
-
-##### emul.c
-
-The critical path of the emulation is implemented in this module. After the initial checks in the `main.c` file, we implement in this module the initialization of the different services that are needed to run the microfirmware app, and then we enter in the main loop of the app.
-
-The critical path is in the `emul_start` function called from the `main.c` file. This functions performs the following actions in this order:
-
-1. Check if the host device must be initialized to perform the emulation of the device, or start in setup/configuration mode.
-2. Initialiaze the normal operation of the app (go to step 4), unless the configuration option says to start the config app or a SELECT button is (or was) pressed to start the configuration section of the app.
-3. If we are here, it means the app is not in emulation mode, but in setup/configuration mode.
-4. During the setup/configuration mode, the driver code must interact with the user to configure the device. The cartridge ROM4 read engine, the ROM3 command DMA ring, and the command dispatcher are brought up here in this order: `init_romemul(false); commemul_init(); chandler_init(); chandler_addCB(...)`. Register one callback per subsystem that needs to react to commands (for the template, `term_command_cb`).
-5. Init the sd card
-6. Init the network, if needed. The polling callback should drain both `chandler_loop()` and `term_loop()` so commands sent during the multi-second WiFi connect window are not dropped.
-7. Now complete the terminal emulator initialization
-8. Main loop. Each iteration calls `chandler_loop()` (drains the ROM3 ring → dispatches commands to registered callbacks) followed by `term_loop()` (renders any published terminal command).
-9. If exited main loop, send START computer command
-10. Not only exit the main loop, but send RESET computer command
-
-The step 3 can need multiple services, so it could steps 5 to 8 too.
-
-To emulate a service or device of the remote computer in this module we will have to orchestrate the difference services to accomplish the task. As a rule of thumb, reuse as much boiler plate code as possible.
-
-##### gconfig.c
-
-This module is responsible for handling the global settings of the microfirmware app. It uses the `settings` library to store and retrieve the global settings. The global settings are stored in flash memory and are used to configure the microfirmware app.
-
-In the global settings we have the parameters that are used for all the apps installed. To avoid misconfigurations during upgrades or downgrades, the list of global default settings is stored in the `defaultEntries` array and is a copy of the values found in the `booster` project. 
-
-```c
-static SettingsConfigEntry defaultEntries[] = {
-    {PARAM_APPS_FOLDER, SETTINGS_TYPE_STRING, "/apps"},
-    {PARAM_APPS_CATALOG_URL, SETTINGS_TYPE_STRING,
-     "http://atarist.sidecartridge.com/apps.json"},
-    {PARAM_BOOT_FEATURE, SETTINGS_TYPE_STRING, "CONFIGURATOR"},
-    {PARAM_HOSTNAME, SETTINGS_TYPE_STRING, "sidecart"},
-    {PARAM_SAFE_CONFIG_REBOOT, SETTINGS_TYPE_BOOL, "true"},
-    {PARAM_SD_BAUD_RATE_KB, SETTINGS_TYPE_INT, "12500"},
-    {PARAM_WIFI_AUTH, SETTINGS_TYPE_INT, "0"},
-    {PARAM_WIFI_CONNECT_TIMEOUT, SETTINGS_TYPE_INT, "30"},
-    {PARAM_WIFI_COUNTRY, SETTINGS_TYPE_STRING, "XX"},
-    {PARAM_WIFI_DHCP, SETTINGS_TYPE_BOOL, "true"},
-    {PARAM_WIFI_DNS, SETTINGS_TYPE_STRING, "8.8.8.8"},
-    {PARAM_WIFI_GATEWAY, SETTINGS_TYPE_STRING, ""},
-    {PARAM_WIFI_IP, SETTINGS_TYPE_STRING, ""},
-    {PARAM_WIFI_MODE, SETTINGS_TYPE_INT, "0"},
-    {PARAM_WIFI_NETMASK, SETTINGS_TYPE_STRING, ""},
-    {PARAM_WIFI_PASSWORD, SETTINGS_TYPE_STRING, ""},
-    {PARAM_WIFI_POWER, SETTINGS_TYPE_INT, "0"},
-    {PARAM_WIFI_RSSI, SETTINGS_TYPE_BOOL, "true"},
-    {PARAM_WIFI_SCAN_SECONDS, SETTINGS_TYPE_INT, "10"},
-    {PARAM_WIFI_SSID, SETTINGS_TYPE_STRING, ""}};
-```
-
-The global settings has to be initialized in the `main.c` file right after changing the clock speed and voltage. It checks if the current app uuid key is the same as the one in the global settings. If it is not, it will be redirected to the booster. If it is, it will check if the settings are already initialized. If they are not initialized, it will initialize them with the default values defined in the `defaultEntries` array.
-
-```c
-  // Load the global configuration parameters
-  int err = gconfig_init(CURRENT_APP_UUID_KEY);
-  // If the global settings are not intialized, jump to the booster app to
-  // initialize them
-  if (err < 0) {
-    DPRINTF("Settings not initialized. Jump to Booster application\n");
-    reset_jump_to_booster();
-  }
-```
-
-Then, access the global settings using the `gconfig_getContext()` function to get the context of the settings and use it to read and write the settings, as usual.
-
-```c
-  SettingsConfigEntry *appsFolder =
-      settings_find_entry(gconfig_getContext(), PARAM_APPS_FOLDER);
-  if (appsFolder == NULL) {
-    DPRINTF("PARAM_APPS_FOLDER not found in the configuration.\n");
-  }
-```
-
-Writing to the global settings is not allowed from the microfirmware apps. Use the Booster app to modify the global settings. 
-
-##### network.c
-
-This module is responsible for handling the network connection of the microfirmware app. It uses the `pico-sdk` library to control the network interface and implement the functionality. 
-
-This module implements several functions to handle the network connections. As a rule of thumb is strongly recommnded to try a network connection early in the critical path of the app, and give up and return an error if no connection is done.  
-
-It's possible to start a WiFi connection in STA mode or AP mode. The STA mode is used to connect to a WiFi network, while the AP mode is used to create a WiFi network. An example code of how to start a WiFi connection in STA mode is:
-
-```c
-SettingsConfigEntry *wifiMode =
-    settings_find_entry(gconfig_getContext(), PARAM_WIFI_MODE);
-wifi_mode_t wifiModeValue = WIFI_MODE_STA;
-if (wifiMode == NULL) {
-  DPRINTF("No WiFi mode found in the settings. No initializing.\n");
-} else {
-  wifiModeValue = (wifi_mode_t)atoi(wifiMode->value);
-  if (wifiModeValue != WIFI_MODE_AP) {
-    DPRINTF("WiFi mode is STA\n");
-    wifiModeValue = WIFI_MODE_STA;
-    int err = network_wifiInit(wifiModeValue);
-    if (err != 0) {
-      DPRINTF("Error initializing the network: %i. No initializing.\n", err);
-    } else {
-      // Set the term_loop as a callback during the polling period
-      network_setPollingCallback(term_loop);
-      // Connect to the WiFi network
-      int maxAttempts = 3;  // or any other number defined elsewhere
-      int attempt = 0;
-      err = NETWORK_WIFI_STA_CONN_ERR_TIMEOUT;
-
-      while ((attempt < maxAttempts) &&
-              (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
-        err = network_wifiStaConnect();
-        attempt++;
-
-        if ((err > 0) && (err < NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
-          DPRINTF("Error connecting to the WiFi network: %i\n", err);
-        }
-      }
-
-      if (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT) {
-        DPRINTF("Timeout connecting to the WiFi network after %d attempts\n",
-                maxAttempts);
-        // Optionally, return an error code here.
-      }
-      network_setPollingCallback(NULL);
-    }
-  } else {
-    DPRINTF("WiFi mode is AP. No initializing.\n");
-  }
-}
-```
-
-In this example, we check if the WiFi mode is set to STA. If it is, we initialize the network and connect to the WiFi network. The code blocks until the connection is established or the maximum number of attempts is reached. If the connection is not established, we return an error code. The `network_setPollingCallback` allows to set a callback function that will be called during the polling period. This is useful to handle the network events and update the UI.
-
-{: .note}
-The polling callback should drain the ROM3 command ring **and** the terminal loop so that commands sent during the multi-second WiFi connect window are not dropped. The template ships an `emul_pollTick` helper that calls `chandler_loop(); term_loop(); select_poll();` and installs it via `network_setPollingCallback(emul_pollTick);` while the connect is in flight. Apps that pass `term_loop` directly will leak commands during connect.
-
-To keep the code simple, give up the app if the network connection is not established. If the connection is successful, continue with the critical path of the app.
-
-##### reset.c
-
-This module is responsible for handling the reset of the microfirmware app. Resetting (and also erasing the app) can be sometimes tricky, so try this module first before implementing your own function.
-
-##### romemul.c / romemul.pio (ROM4 read engine)
-
-This is the core of all the microfirmware apps. It implements the emulation of the cartridge ROM4 region as a pure read engine.
-
-Two PIO programs and a chained pair of DMA channels turn an Atari ST ROM4 access into a 16-bit reply with no CPU involvement at all:
-
-1. The PIO state machine waits on `ROM4_GPIO`, latches the 16-bit address from the bus into the RX FIFO.
-2. The first DMA channel reads that address out of the FIFO and writes it into the second channel's `al3_read_addr_trig` register.
-3. The second DMA channel does a 16-bit read at that address (which falls inside the 64 KB `ROM_IN_RAM` region) and pushes the result into the PIO TX FIFO.
-4. The state machine drives the data onto the bus.
-5. Both channels are chained back-to-back, so the loop runs forever without a CPU IRQ.
-
-Because the read path is entirely DMA-driven, the only thing the CPU has to do at startup is `init_romemul(bool copyFlashToRAM)` — pass `true` if you want the runtime to copy the ROM image from XIP flash into `ROM_IN_RAM` before enabling the engine, `false` if you populate the region yourself (e.g. from the SD card or by writing the image programmatically).
-
-If you change any of these files you can find very strange bugs in the app...
-
-##### commemul.c / commemul.pio (ROM3 command DMA ring)
-
-The cartridge ROM3 region is no longer a data bank. It is reserved for the command channel: the m68k side encodes commands by reading from addresses inside ROM3 (`$FB0000`+), and the RP2040 captures every ROM3 access into a ring buffer.
-
-`commemul_init()` brings up:
-- A dedicated PIO state machine on `ROM3_GPIO` that waits on the ROM3 chip-select and pushes the 16-bit address onto the RX FIFO.
-- A single DMA channel running in **ring mode** (`channel_config_set_ring`) that drains the FIFO into a 16 KB / 8,192-sample ring buffer. The size holds about two of the largest sends the ST can make, retries included; the arithmetic is next to `COMM_RING_BITS` in `commemul.c`.
-
-There are no IRQs anywhere in this path. The application drains the ring by calling `commemul_poll(callback)`, which derives the producer index from `dma_hw->ch[ch].transfer_count` and invokes the callback for every new sample. If the application stops draining for long enough that a whole ring arrives, the lap is counted (`commemul_getOverruns()`) and the unread samples are dropped rather than parsed as a mix of old and new ones; the parser then resynchronises on the next header. The channel is re-armed from its live write address long before its transfer count runs out, so capture never stops.
-
-`chandler.c` keeps counters of the handshake as plain globals: commands answered, dropped while one was pending, repeated with the previous token (the ST retrying), checksum errors, and the time spent busy, waiting for the ST, and draining. `tools/dev/swd.py counters` reads them from a running release or debug build.
-
-##### chandler.c (command dispatcher)
-
-`chandler` is the polled command parser/dispatcher that sits on top of `commemul` and `tprotocol`:
-
-```c
-chandler_init();
-chandler_addCB(my_command_handler);   // can register multiple
-...
-while (running) {
-  chandler_loop();   // drains commemul ring → tprotocol_parse → callbacks
-  ...
-}
-```
-
-`chandler_loop()` calls `commemul_poll`, feeds each captured 16-bit sample into `tprotocol_parse`, and once a complete command has been validated (header + checksum) it walks the registered callback list. Each callback has the signature `void cb(TransmissionProtocol *protocol, uint16_t *payloadPtr)` — `payloadPtr` already points past the random-token prefix, so callbacks can read parameters directly with the `TPROTO_GET_*` macros.
-
-After dispatching, `chandler` writes the command's random-token reply into shared memory, so the m68k side can detect that the command was acknowledged.
-
-##### sdcard.c
-
-This module is responsible for handling the micro SD card at low level (signal level) and also file system level. It uses the `no-OS-FatFS-SD-SDIO-SPI-RPi-Pico` library to control the micro SD card and implement the functionality.
-
-If your microfirmware app needs to access the micro SD card, you can use this module to read and write files. If you need access to the micro SD card at file system level, it's a good practice to create your own folder with the name of your app and implement the file system access in this folder. This way you can keep the code clean and easy to maintain. 
-
-Let's look at an example of how to use the `sdcard.c` module to read a file from the micro SD card:
-
-```c
-FATFS fsys;
-SettingsConfigEntry *folder =
-    settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
-char *folderName = "/test";  // MODIFY THIS TO YOUR FOLDER NAME
-if (folder == NULL) {
-  DPRINTF("FOLDER not found in the configuration. Using default value\n");
-} else {
-  DPRINTF("FOLDER: %s\n", folder->value);
-  folderName = folder->value;
-}
-int sdcardErr = sdcard_initFilesystem(&fsys, folderName);
-if (sdcardErr != SDCARD_INIT_OK) {
-  DPRINTF("Error initializing the SD card: %i\n", sdcardErr);
-  failure(
-      "SD card error.\nCheck the card is inserted correctly.\nInsert card "
-      "and restart the computer.");
-  while (1) {
-    // Wait forever
-    term_loop();
-#ifdef BLINK_H
-    blink_toogle();
-#endif
-  }
-} else {
-  DPRINTF("SD card found & initialized\n");
-}
-```
-
-As described in the section about networking, do not try to access the micro SD card if it is not initialized. 
-
-##### select.c
-
-This module is responsible for handling the SELECT button on the device. 
-
-The SELECT can have two different functions:
-
-- Short SELECT: Push and release. The template restarts the RP, which brings the app back to its configuration menu.
-- Long SELECT: Push and hold for ten (10) seconds (`SELECT_LONG_RESET`). This is a factory reset: `reset_deviceAndEraseFlash()` erases the global settings and the device restarts into the Booster app, which then clears the settings of every app.
-
-`select_poll()` runs the button's state machine and never blocks. It debounces over 30 ms and calls the long-press callback as soon as the button has been held for `SELECT_LONG_RESET`; otherwise it calls the short-press callback on release. Call it from the main loop and from every long wait, next to `chandler_loop()`. A GPIO edge interrupt set up by `select_configure()` records a press that started and ended while nothing could poll, and the next call handles it.
-
-```c
-select_configure();
-select_setResetCallback(reset_device);
-select_setLongResetCallback(reset_deviceAndEraseFlash);
-
-while (keepActive) {
-  select_poll();    // never blocks
-  chandler_loop();  // commands from the ST
-  // ... the rest of the app
-}
-```
-
-Keep SELECT on core 0. A watcher on core 1 ran the long press's flash erase while core 0 executed from the same flash, and both cores faulted until a power cycle.
-
-##### term.c 
-
-Example of the code that implemens the high level commands of the terminal. It also implements the remote command handlers, but they will be explained in the section about the `tprotocol.h` module.
-
-#### Memory mapping
-
-The memory mapping of the Multi-device board is defined in the file `rp/src/memmap_rp.ld` and it performs significant changes to the standard memory mapping of a RP2040 application. The memory mapping of the Multi-device board is:
-- FLASH: Reduced from the 2MBytes found in the Raspberry Pi Pico W boards to 1024Kbytes for the active microfirmware app.
-- RAM: Reduced from the 264KBytes found in the Raspberry Pi Pico W boards to **192Kbytes** (origin `0x20000000`, length `192K`).
-- SCRATCH_X: No changes. Core 1's stack; the template never starts core 1. A build with HTTPS downloads (`APP_DOWNLOAD_HTTPS=1`) gives it to core 0's stack instead, since a TLS handshake came too close to 4Kbytes.
-- SCRATCH_Y: Core 0's stack, all 4Kbytes (`PICO_STACK_SIZE`), with an MPU guard on its bottom 32 bytes: an overflow is a HardFault instead of silent damage. With HTTPS the stack runs on through SCRATCH_X, 8Kbytes, and the guard sits at the bottom of SCRATCH_X.
-- CONFIG_FLASH: FLASH memory reserved for the configuration parameters of the Multi-device board. 4Kbytes.
-- ROM_IN_RAM: RAM memory reserved for the cartridge ROM4 image. **64Kbytes** at `0x20030000`. This is exactly one cartridge ROM bank; the second 64 KB bank is no longer mirrored to RAM since ROM3 is now used as a command channel rather than a data bank.
-
-The split between `RAM` (192K) and `ROM_IN_RAM` (64K) is fixed: the ROM4 read engine derives the address it serves from `__rom_in_ram_start__` (a symbol defined by the linker script), and changing the location or size of `ROM_IN_RAM` would require updating both the linker script and the C-side address shift in `init_romemul`.
-
-The heap ends where `RAM` ends (`__StackLimit`), so it can never hand out memory inside the cartridge window, and malloc returns NULL when it runs out (`PICO_MALLOC_PANIC=0`): check every allocation. The link guarantees 32Kbytes of heap (`PICO_HEAP_SIZE`); if your static buffers leave less, it fails with ``region `RAM' overflowed``. Keep big buffers off the stack: the setup menu already uses about 1.7Kbytes of core 0's 4Kbytes.
-
-##### Shared 64 KB region layout
-
-The 64 KB `ROM_IN_RAM` region is mirrored 1:1 into the Atari ST address space at `$FA0000`. Both sides agree on a single layout, defined symbolically in `rp/src/include/chandler.h` (RP) and `target/atarist/src/main.s` (m68k). Apps must never hard-code an offset into this region; always derive it from the constants below so the layout stays the single source of truth.
-
-| m68k addr | RP addr      | Size       | Region                                    |
-| --------- | ------------ | ---------- | ----------------------------------------- |
-| `$FA0000` | `0x20030000` | 8 KB max   | **CARTRIDGE** — m68k header + code        |
-| `$FA2000` | `0x20032000` | 4 B        | **CMD_MAGIC_SENTINEL** — m68k polls here for `CMD_NOP` / `CMD_RESET` / `CMD_BOOT_GEM` / `CMD_TERMINAL` |
-| `$FA2004` | `0x20032004` | 4 B        | **RANDOM_TOKEN** — chandler echoes the request token here so `send_sync` returns |
-| `$FA2008` | `0x20032008` | 4 B        | **RANDOM_TOKEN_SEED**                     |
-| `$FA200C` | `0x2003200C` | 4 B        | reserved for framework use (zeroed by `chandler_init`) |
-| `$FA2010` | `0x20032010` | 240 B      | **SHARED_VARIABLES** — 60 indexed 4-byte slots |
-| `$FA2100` | `0x20032100` | 512 B      | **TRANSTABLE** — high-res mask table written by `display_setupU8g2()` |
-| `$FA2300` | `0x20032300` | ~48 KB     | **APP_FREE** — free arena for app-specific buffers |
-| `$FAE0C0` | `0x2003E0C0` | 8000 B     | **FRAMEBUFFER** (320×200 monochrome)      |
-| `$FAFFFF` | `0x2003FFFF` | —          | end of region                             |
-
-Why the framebuffer sits at the top:
-- Apps get a single contiguous 48 KB arena (`APP_FREE`) instead of the previous fragmented "above the framebuffer / below the tokens" hole.
-- A framebuffer overrun walks off the end of the 64 KB region into unused RP RAM rather than corrupting the random-token slot or the shared-variables block.
-
-Cartridge code budget:
-- The cartridge image (header + m68k code) MUST fit in the first 8 KB of the region (`$FA0000`–`$FA1FFF`). Anything larger overlaps the shared block and breaks the protocol.
-- `target/atarist/build.sh` enforces this against `BOOT.BIN` after `vlink` and aborts with a clear error if the image exceeds 8192 bytes. Direct `vasm`/`vlink` invocations bypass the check, so prefer the build script.
-
-Constants — each row is the same value seen from both sides. RP-side
-names live in `rp/src/include/chandler.h`; m68k-side names live in
-`target/atarist/src/main.s`. Always reference the named symbol; never
-hard-code the literal address.
-
-| Purpose                                     | RP (chandler.h)                       | m68k (main.s)                | Value      |
-| ------------------------------------------- | ------------------------------------- | ---------------------------- | ---------- |
-| Cartridge code size budget                  | `CHANDLER_CARTRIDGE_CODE_SIZE`        | `CARTRIDGE_CODE_SIZE`        | 8 KB       |
-| Base of the shared block                    | (= `CHANDLER_CMD_SENTINEL_OFFSET`)    | `SHARED_BLOCK_ADDR`          | `$FA2000`  |
-| Command sentinel slot                       | `CHANDLER_CMD_SENTINEL_OFFSET`        | `CMD_MAGIC_SENTINEL_ADDR`    | `$FA2000`  |
-| Random-token reply slot                     | `CHANDLER_RANDOM_TOKEN_OFFSET`        | `RANDOM_TOKEN_ADDR`          | `$FA2004`  |
-| Random-token seed slot                      | `CHANDLER_RANDOM_TOKEN_SEED_OFFSET`   | `RANDOM_TOKEN_SEED_ADDR`     | `$FA2008`  |
-| Reserved (zeroed by `chandler_init`)        | `CHANDLER_RESERVED_OFFSET`            | `RESERVED_SLOT_ADDR`         | `$FA200C`  |
-| Shared variables base (60 × 4 B slots)      | `CHANDLER_SHARED_VARIABLES_OFFSET`    | `SHARED_VARIABLES`           | `$FA2010`  |
-| Shared-variables slot count                 | `CHANDLER_SHARED_VARIABLES_SLOTS`     | (implicit: 60)               | 60         |
-| App buffers base (TRANSTABLE + APP_FREE)    | `CHANDLER_APP_BUFFERS_OFFSET`         | `APP_BUFFERS_ADDR`           | `$FA2100`  |
-| High-res mask table base                    | `CHANDLER_HIGHRES_TRANSTABLE_OFFSET`  | `TRANSTABLE`                 | `$FA2100`  |
-| High-res mask table size                    | `CHANDLER_HIGHRES_TRANSTABLE_SIZE`    | `TRANSTABLE_SIZE`            | 512 B      |
-| Free arena for app-specific buffers         | `CHANDLER_APP_FREE_OFFSET`            | `APP_FREE_ADDR`              | `$FA2300`  |
-| Framebuffer base                            | `CHANDLER_FRAMEBUFFER_OFFSET`         | `FRAMEBUFFER_ADDR`           | `$FAE0C0`  |
-| Framebuffer size                            | `CHANDLER_FRAMEBUFFER_SIZE`           | `FRAMEBUFFER_SIZE`           | 8000 B     |
-
-Apps that use the high-res rendering path must skip past `CHANDLER_HIGHRES_TRANSTABLE_SIZE` (512 B) of `APP_BUFFERS` before laying down their own data — `display_setupU8g2()` writes the mask table at `APP_BUFFERS_OFFSET..APP_BUFFERS_OFFSET+0x200`. Apps that don't use the high-res path can reclaim those 512 bytes.
-
-#### The remote computer codebase
-
-Although the SidecarTridge Multidevice was developed with Atari ST in mind, it could be a chance to be ported to other target architectures. So the structure of the projects in the `target` folder is:
-
-- **Architecture name**: Name of the computer architecture that implements the sender commands and emulation. In the current version, `atarist`. 
-
-Inside the `atarist` folder we will find:
-
-- `src`: source code in assemnbler of the scaffolding app.
-- `build.sh`: script that compiles, build the app and also creates an array in C to embed it into the microcontroller project.
-- `Makefile`: good old makefile of the project.
-- `firmware.py`: Python script that generates the C array of the binary.
-- `version.txt`: Version of the app.
-
-If we open the `src` folder we will found the following folders and files:
-- `inc`: function and macros to ease the development.
-- `main.s`: Assembly code that implements a cartridge app that runs in ROM4 at boot time.
-- `userfw.s`: User firmware module — placeholder for app-specific m68k code (see "User firmware module" below).
-- `userfw.ld`: vlink linker script that places `main.s` and `userfw.s` at fixed offsets within the cartridge image.
-
-The app in `main.s` is a very simple app. In fact, is deliberately simple on purpose. The app do as follows:
-
-1. Defines the cartridge header format for an executable app after GEMDOS
-2. Depending on the resolution, copies the frame buffer in the ROM cartridge memory and display it in LOW or HIGH resolution.
-3. Checks for the keystrokes and send the commands
-4. If some of the commands wants to continue to GEM or RESET, do it.
-5. On `CMD_START` (sentinel value `4`), branches to `rom_function`, which `jmp`s to the user firmware module at `USERFW = $FA0800`.
-
-It's very important to note that this app does not use a single byte of RAM memory at all (except the screen or system variables, obviously) so all developers must take these three ways:
-1. Develop the app without using the RAM memory. Challenging, but possible sending the data to store as a command and letting the microcontroller shared memory space to handle the trick. 
-2. Develop the app using some not occupied RAM memory setting manually the BSS and Heap.
-3. Develop your app, place it in the ROM address range and finally copy it to RAM and initialize the memory settings before executing. This is how games and apps in ROM use to work.
-
-#### User firmware module (`userfw.s`)
-
-The cartridge image is split into two `.text` sections by `target/atarist/src/userfw.ld`:
-
-| Offset      | m68k addr       | Size    | Section                       |
-| ----------- | --------------- | ------- | ----------------------------- |
-| `0x000000`  | `$FA0000`       | 2 KB    | `main.s` — boot + dispatch    |
-| `0x000800`  | `$FA0800`       | 6 KB    | `userfw.s` — user firmware    |
-
-`USERFW equ (ROM4_ADDR + $800)` names the entry. Once the RP writes `CMD_START` to the cartridge sentinel, `main.s`'s `check_commands` macro `beq`s to `rom_function`, which puts back a Mega STE's cache setting and does `jmp USERFW`. The top of the stack is then TOS's return address: an `rts` from the user firmware lets TOS carry on booting, as the demo does.
-
-How to launch the user firmware:
-- From the RP/terminal side: pick `[F]irmware` in the menu (key `f`). The `cmdFirmware` handler in `rp/src/emul.c` writes `DISPLAY_COMMAND_START` (= `4` = `CMD_START`) to the cartridge sentinel via `SEND_COMMAND_TO_DISPLAY`. The m68k's vsync-polled `check_commands` then dispatches to `USERFW`. The command is refused until the RP has had the ST's hello since it started: after an RP-only reboot, reset the ST first.
-- The sentinel is a level, not a queue: it stays at `CMD_START` until the RP writes something else, so resetting the ST runs the user firmware again.
-
-What `userfw.s` has to work with (all included at its top, the senders at its end):
-
-| File | What it gives |
-| --- | --- |
-| `inc/sidecart_layout.s` | The cartridge window (`RANDOM_TOKEN_ADDR`, `SHARED_VARIABLES`, `APP_FREE_ADDR`, `FRAMEBUFFER_ADDR`, …) and the command channel. Shared with `main.s`; the single source of truth on the m68k side. |
-| `inc/sidecart_macros.s` | `send_sync` / `send_write_sync`, what a send keeps and destroys, and the Mega STE cache macros. |
-| `inc/tos.s` | GEMDOS, BIOS and XBIOS function numbers. They are decimal in `cmp.w #n`; the documents often give them in hex. |
-| `inc/sidecart_functions.s` | The senders themselves, `detect_hw` and `get_tos_version`. Included at the end of the module, followed by the NOP tail. |
-
-Two rules for the code itself:
-- **Everything is PC-relative.** The module runs from the cartridge but is linked at offset `$0800`, not at `$FA0800`: use `lea label(pc), a0`, never an absolute label.
-- **The module ends with the NOP tail**, after `include "inc/sidecart_functions.s"`: `even`, eight `nop`s, a `<module>_end:` label. `firmware.py` strips trailing zeros from the image and the RP copies only that many words into the window, while the write sender and the 68000's prefetch read past the end of the wait loop. `userfw.s` is the last module in the image, so this is not optional there.
-
-The default `userfw.s` prints a message and returns:
-
-```asm
-userfw:
-    lea     hello_msg(pc), a0       ; address of message
-    move.l  a0, -(sp)               ; push string pointer
-    move.w  #GEMDOS_Cconws, -(sp)   ; push function code (= 9)
-    trap    #1                      ; call GEMDOS
-    addq.l  #6, sp                  ; clean up arguments
-    rts
-```
-
-Keep the total cartridge image (`main.s` + `userfw.s`) within `CARTRIDGE_CODE_SIZE = 8 KB`; `target/atarist/build.sh` enforces this against `BOOT.BIN` after `vlink`.
-
-Adding more modules (mirroring md-drives-emulator's `gemdrive.ld` pattern):
-1. Pick an offset within the cartridge budget and add a new `.text_<name> 0x????? : { <name>.o(.text) }` section to `userfw.ld`.
-2. Mirror the offset on the m68k side with an `equ (ROM4_ADDR + $????)` symbol in `inc/sidecart_layout.s`.
-3. Add the `.o` target to `target/atarist/Makefile` and link it in. A module that talks to the RP includes the same files as `userfw.s` and ends with the NOP tail.
-4. Either chain modules from `rom_function` (e.g. `jsr GEMDRIVE / jsr FLOPPYEMUL / jmp USERFW`), or add a new sentinel command and dispatch from `check_commands`.
-
-#### The Transmision Protocol (TPROTOCOL)
-
-The `tprotocol.h` module is the core of the communication between the microfirmware app and the remote computer. It implements the communication protocol and the logic to handle the commands sent from the remote computer.
-
-##### Anatomy of a command
-
-The cartridge port of the Atari ST computers is a read-only port. If it is not possible to write to the cartridge port then we have to find a way to inform the microcontroller of the commands that are being sent from the remote computer.
-
-The solution is to read from reserved memory addresses of the cartridge port. Example: If we want to send the value $1234 to the microcontroller, we can write the value $1234 to the address range of ROM3: $FB1234. The microcontroller will read the value from the address $FB1234, will keep the lower 16 bits and will ignore the upper 16 bits. Hence, the value $1234 can be interpreted as a command.
-
-But obviously this is not enough. We cannot control that any app read from a valid memory address in the computer and that would trigger a false positive command. So how can we control that the command is valid and that it is not a false positive? Implementing a protocol with multiple data integrity checks.
-
-So, if we want to send the value $1234 to the microcontroller, we should have to send something like this:
-
-```plaintext
-+---------+---------------------+------------------------------+
-|  INDEX  |         VALUE       |          DESCRIPTION         |
-+---------+---------------------+------------------------------+
-|  0x00   |        0xABCD       |            HEADER            |
-|  0x02   |        0x1234       |            VALUE             |
-+---------+---------------------+------------------------------+
-```
-
-Adding a header with the magic number 0xABCD to the command will help to identify the command as a valid command. But this is a very simple approach and it is not enough. It does not have enough entropy and obviously we want to have more complex commands. So let's make a list of what we would need to implement a good command transmision protocol over a noisy channel like a cartridge port:
-- **Header**: A magic number to identify the command as a valid command.
-- **Command**: The command number to be executed.
-- **Payload size**: The size of the payload in bytes.
-- **Payload**: The data to be sent to the microcontroller.
-- **Checksum**: A checksum to verify the integrity of the command.
-
-So now we have our command structure:
-
-```plaintext
-+---------+---------------------+------------------------------+
-|  INDEX  |         VALUE       |          DESCRIPTION         |
-+---------+---------------------+------------------------------+
-|  0x00   |        0xABCD       |            HEADER            |
-|  0x02   |        0xZZZZ       |            COMMAND           |
-|  0x04   |        0xNNNN       |         PAYLOAD SIZE         |
-|  0x06   |        0xaaaa       |            PAYLOAD           |
-...
-|0xNNNN-2 |        0xzzzz       |            PAYLOAD           |
-|0xNNNN+6 |        0xCHKS       |            CHECKSUM          |
-+---------+---------------------+------------------------------+
-```
-
-This is the command protocol structure that efficiently `tprotocol.h` parses from the ROM readings from ROM3. 
-
-##### Command catalog
-
-Now that we have an structure for the command, we need to define the commands that we want to implement. And we have to implement them in two different places:
-
-**Listener**
-
-The listener is the code that will be executed when the command is received. This code will be executed in the context of the microcontroller, so it has to be fast and efficient. And it will be developed in C.
-
-**Sender**
-
-The sender is the code that will be executed when the command is sent from the remote computer. It has to be fast and eficcient also, and should be implemented in C or Assembler. In this firt version, for Atari ST series.
-
-
-Following our example, we want to implement the following commands:
-
-- **0x0000** `TERMINAL_START` : Starts the terminal emulation mode.
-- **0x0001** `TERMINAL_KEYSTROKE` : Sends a keystroke to the terminal.
-
-And in the code we will implement the following commands:
-
-```c
-// App commands for the terminal
-#define APP_TERMINAL 0x00  // The terminal app
-
-// App terminal commands
-#define APP_TERMINAL_START (APP_TERMINAL + 0x00)      // Enter terminal command
-#define APP_TERMINAL_KEYSTROKE (APP_TERMINAL + 0x01)  // Keystroke command
-```
-
-In the Atari ST side, we will implement the following commands:
-
-```asm
-; App commands for the terminal
-APP_TERMINAL 				equ $0 ; The terminal app
-
-; App terminal commands
-APP_TERMINAL_START   		equ $0 ; Start terminal command
-APP_TERMINAL_KEYSTROKE 		equ $1 ; Keystroke command
-```
-
-The payload size of the command will be calculated during the handling command process.
-
-##### Command handling
-
-Starting with template `v1.1.0` the command path is **polled, not interrupt-driven**. ROM3 cartridge accesses are captured by a dedicated PIO + DMA ring (see `commemul.c`); the application reads commands out of that ring by calling `chandler_loop()` from its main loop. `chandler` parses the protocol via `tprotocol_parse` and dispatches each validated command to a list of registered callbacks.
-
-To handle a command in your app you do two things:
-
-1. **Register a callback** during initialization, after `chandler_init()`:
-
-```c
-init_romemul(false);     // ROM4 chained-DMA read engine
-commemul_init();         // ROM3 DMA ring on GPIO 26
-chandler_init();         // command parser/dispatcher
-chandler_addCB(my_command_handler);
-```
-
-You can register multiple callbacks; `chandler` walks the list in registration order for every parsed command. The terminal subsystem registers `term_command_cb` this way.
-
-2. **Implement the callback**. The signature is `void cb(TransmissionProtocol *protocol, uint16_t *payloadPtr)`. The `payloadPtr` argument has already been advanced past the 32-bit random token, so your handler can read parameters directly with the `TPROTO_GET_*` macros:
-
-```c
-void __not_in_flash_func(my_command_handler)(TransmissionProtocol *protocol,
-                                              uint16_t *payloadPtr) {
-  switch (protocol->command_id) {
-    case APP_TERMINAL_START: {
-      display_termStart(DISPLAY_TILES_WIDTH, DISPLAY_TILES_HEIGHT);
-      term_clearScreen();
-      term_printString("Type 'help' for available commands.\n");
-      termInputChar('\n');
-      SEND_COMMAND_TO_DISPLAY(DISPLAY_COMMAND_TERM);
-      break;
-    }
-    case APP_TERMINAL_KEYSTROKE: {
-      // payloadPtr already points past the random token.
-      uint32_t payload32 = TPROTO_GET_PAYLOAD_PARAM32(payloadPtr);
-      char keystroke = (char)(payload32 & TERM_KEYBOARD_KEY_MASK);
-      uint8_t shiftKey =
-          (payload32 & TERM_KEYBOARD_SHIFT_MASK) >> TERM_KEYBOARD_SHIFT_SHIFT;
-      uint8_t scanCode =
-          (payload32 & TERM_KEYBOARD_SCAN_MASK) >> TERM_KEYBOARD_SCAN_SHIFT;
-      DPRINTF("Keystroke: 0x%02X scan: %d shift: %d\n", keystroke, scanCode,
-              shiftKey);
-      termInputChar(keystroke);
-      break;
-    }
-    default:
-      // Other callbacks may handle this command.
-      break;
-  }
-}
-```
-
-3. **Drain the ring from your main loop**. Every iteration calls `chandler_loop()`. Inside, it polls the ROM3 ring, parses any new samples, dispatches completed commands to your callback, then writes the random-token reply into shared memory so the m68k side knows the command was acknowledged:
-
-```c
-while (keepActive) {
-  chandler_loop();   // drains the ROM3 ring; calls registered callbacks
-  term_loop();       // renders any output, etc.
-  ...
-}
-```
-
-If your app does long-blocking work (e.g. `cyw43_arch_wait_for_work_until` during WiFi connect), make sure `chandler_loop` is also drained from the polling callback you install with `network_setPollingCallback`, otherwise commands will pile up in the ring during the blocking window. The template's `emul.c` provides `emul_pollTick` as a one-liner that calls both `chandler_loop()` and `term_loop()`.
-
-To avoid memory issues and manage little and big endian properly, use the macros defined in `tprotocol.h` to read and write the payload. The macros start with the prefix `TPROTO`.
-
-> **Note on `TransmissionProtocol.payload`.** As of `v1.1.0` the payload buffer is typed as `uint16_t[]` (was `unsigned char[]`). The `TPROTO_GET_*` / `TPROTO_NEXT*` macros work the same way; only the underlying storage type changed. If you have older code that did `((uint16_t *)protocol->payload)[i]`, the cast is now a no-op but still compiles.
-
-##### Returning the command results
-
-Returning values to the Atari ST is a much more easy task. In order to do so, write the values to the shared memory address defined for the random token. A good place can be the ROM3 addressing. There is nothing avoiding us from using this ROM3 address space, so we can use it to return the values to the Atari ST. To read and write information to the shared memory and avoid the mess of big and little endian, use the macros defined in the `memfunc.h` file.
-
-###### Sending commands from the remote computer
-
-The ST sends commands with the functions in `target/atarist/src/inc/sidecart_functions.s`, through the macros in `inc/sidecart_macros.s`:
-
-```asm
-send_sync       <command>, <payload bytes>   ; payload in d3-d6 (0 to 16 bytes)
-send_write_sync <command>, <buffer bytes>    ; d3, d4, d5 always sent, then the buffer at a4
-```
-
-Each macro sends the command, waits for the RP's answer and resends up to `CMD_RETRIES_COUNT` times. It returns with `d0 = 0` and Z set on success, `d0` non-zero and Z clear when every attempt timed out. The functions underneath (`send_sync_command_to_sidecart`, `send_sync_write_command_to_sidecart`) keep the same contract, so code may branch on the flags straight after either.
-
-What a send keeps, measured on an ST:
-
-| Macro | Keeps | Destroys |
+`build.sh` builds the cartridge code first (`target/atarist/build.sh`, at most 8 KB), embeds it
+in the RP firmware as `rp/src/include/target_firmware.h`, builds the RP firmware, and leaves in
+`dist/` the UF2, the app descriptor (from `desc/app.json`) and an MD5. Both build types are CMake
+`Release`: `debug` only turns on the debug console (921,600 baud on the probe's UART), the debug
+mailbox and the disk self-test.
+
+For the edit-flash-check loop, `tools/dev/flash.sh debug --probe` builds out of tree in seconds,
+flashes through the probe and checks the result. It does not rebuild the cartridge code: run
+`(cd target/atarist && ./build.sh "$PWD" release 1)` first when `main.s` changed.
+
+## The RP2040 side
+
+### `emul.c`: the start and the main loop
+
+`emul_start()` runs, in this order:
+
+1. Copies the cartridge image into `ROM_IN_RAM` and brings up the ROM4 read engine
+   (`init_romemul`), the ROM3 command ring (`commemul_init`) and the command dispatcher
+   (`chandler_init`), with two callbacks: `emul_bootScreenCb` (the boot screen's request for
+   Booster) and `macdisk_commandCb` (everything the Jackintosh ROMs send). `macdisk_init()`
+   publishes the identity before the first answer.
+2. Configures SELECT (`select_configure`): a short press goes to `emul_selectShortPress()`, a
+   long one to `reset_deviceAndEraseFlash()`.
+3. Mounts the microSD card and creates the app folder (`FOLDER`, default `/jackintosh`). Without
+   a usable card nothing else starts: `macdisk_setCardStatus()` publishes why, and
+   `emul_serveCardError()` keeps answering the ST and blinks the LED every 700 ms until the RP
+   restarts. With a card, `macdisk_mountAll()` mounts the chosen images, and a debug build runs
+   the disk self-test if `SELFTEST.RUN` is in the app folder.
+4. Reads the RTC settings (`emul_startRtc()`): with `RTC_ENABLED` "false" the network is never
+   brought up; otherwise `ntp_setServer()` takes `RTC_NTP_HOST` and `RTC_NTP_PORT`, and Wi-Fi
+   connects in STA mode with the credentials Booster stores. The connect blocks for seconds, so
+   `emul_pollTick` (`chandler_loop`, the ST-boot work, `select_poll`) is installed as the network's
+   polling callback, and the ST is answered throughout.
+5. The main loop, which never waits: the debug mailbox, `select_poll()`, `chandler_loop()`, the
+   ST-boot work (`macdisk_mountEmpty()` after each hello), a FD0 step a SELECT press asked for, the
+   LED, the debug command log, `macdisk_syncPending()`, and every 10 ms the network poll and the
+   NTP client (`ntp_pollSync()`).
+6. When the boot screen asks for Booster: `CMD_RESET` in the sentinel, held while the ST sees it,
+   then the jump to Booster.
+
+A **Mac session** is an ST boot whose hello no `CMD_SET_SHARED_VAR` follows: the TOS boot screen
+sends one right after its hello, the Jackintosh ROMs never do. In a Mac session a short SELECT
+press steps FD0's slots instead of restarting the RP.
+
+### `macdisk.c`: the Mac's disks
+
+Three units of 512-byte sectors: FD0 (internal floppy), FD1 (external floppy), HD0 (hard disk).
+
+- **What is mounted.** The app settings name the images as full paths: FD0's ten slots (`FD0`,
+  `FD0_2` to `FD0_10`), `FD1` and `HD0`. At power-on FD0 holds slot 1; a unit whose setting is
+  empty stays empty. At every ST boot, `macdisk_mountEmpty()` puts FD0 back on slot 1 (ejecting
+  an image from another slot) and mounts again each unit an EJECT emptied (a Mac's Restart and
+  Shut Down eject its floppies), so the unit, the slot GET_SETTINGS answers and the menu agree.
+- **Formats**, told from the content: raw, DiskCopy 4.2 (data from `$54`), MacBinary II around a
+  DiskCopy 4.2 image. DiskCopy images are read-only: a write would leave the header's checksum
+  stale, and the tags are not served.
+- **The `.rw` rule**, md-drives-emulator's: a floppy is opened read-only unless its name ends in
+  `.rw`, in any case. The hard disk is read-write unless the file is read-only on the card.
+- **Reads and writes.** READ takes up to 32 sectors, WRITE up to 2 (one `send_write_sync`). A
+  fastseek cluster map makes the seeks of a fragmented image cheap. Writes are synced
+  `MACDISK_SYNC_DELAY_MS` (3 s) after the first unsynced one, so a burst pays the directory update
+  once.
+- **The chooser.** LIST lists a folder for the menu, 16 entries per answer, from a listing of up
+  to 256 entries (26 KB, allocated from the heap at the first LIST and kept) that is made again
+  when the first entry is 0, or the folder or d4 changes. GET_SETTINGS and SET_SETTING read and write
+  the settings; a SET is checked first (an absolute path inside `FOLDER`, no `..`, no backslash),
+  writes the flash only when the value changes (about 45 ms), and swaps the unit's image before
+  the answer.
+- **The FD0 step.** `macdisk_stepFd0()`, for SELECT: with FD0 empty, the next slot that names an
+  image becomes current and goes in; with a disk in FD0 it does nothing.
+- **Debug builds** log every command with its registers, result and time; the callback only
+  records it and `macdisk_printAnswered()` prints it after the answer.
+
+The open, read, write, fastseek and deferred-sync code comes from md-drives-emulator's `acsi.c`
+and `floppy.c`. Its multi-chunk write is left out: its retried last chunk byte-swaps the earlier
+chunks again.
+
+`devdisktest.c` (debug builds) is the disk self-test: it creates its own floppy and hard disk
+images in `SELFTEST/` under the app folder, mounts them by name (`macdisk_mountByName()`), checks
+every sector through `macdisk_commandCb()`, and puts the card's own images back.
+
+### `aconfig.c`: the app settings
+
+| Key | Default | Meaning |
 | --- | --- | --- |
-| `send_sync` | d1-d6 | d0, d7 (its retry count), a0-a1 (a0-a3 when the wait loop is copied, `COMMAND_SYNC_USE_DSKBUF` not 0) |
-| `send_write_sync` | d1-d5, a4 | d0, d6 (its retry count), d7, a0-a1 (a0-a3 likewise) |
+| `FOLDER` | `/jackintosh` | The top of the menu's browser; `PRAM.BIN` lives here |
+| `MODE` | `255` | The template's app mode; saved before the jump to Booster |
+| `FD0`, `FD0_2` … `FD0_10` | `""` | FD0's slots 1 to 10 |
+| `FD1`, `HD0` | `""` | FD1's and HD0's images |
+| `RTC_ENABLED` | `true` | The time of day from NTP, and the Wi-Fi with it |
+| `RTC_NTP_HOST` | `pool.ntp.org` | The NTP server |
+| `RTC_NTP_PORT` | `123` | Its port |
+| `ROM_OPTION_0` … `ROM_OPTION_9` | `""` | The Jackintosh ROMs' options, kept for them and never read here. Today the ROMs use 0 for the menu's countdown, 1 for the Mac's RAM, 2 for the right mouse button, 3 for the screen, 4 for the keyboard layout, 5 for the mouse's tracking speed and 6 for a Mega STE's speed and cache; "" means their default |
 
-The senders leave a0 and a1 pointing into the ROM3 command window: a payload read through them is itself sampled by the RP, and the command fails its checksum on every retry. Take what you need into a kept register before the send, and reload address registers after it.
+Never remove an entry from `defaultEntries` and add new ones only at the end: the loader reads
+only as many stored entries as there are defaults. The app's 4 KB settings sector holds 32 entries
+of 127 bytes, one of them the version: 31 settings, of which these take 27. `settings_init()`
+refuses a default table that does not fit, and the app then drops to Booster. `ACONFIG_VERSION_NUMBER` is 2 while
+developing, so settings saved under the shared development UUID by the template build are not
+loaded; it goes back to 1 with the app's own UUID, before the release.
 
-How the exchange works, and what each side may assume:
+### `ntp.c` and `network.c`: the time of day
 
-- **The command is read, not written.** The cartridge port is read-only, so the ST emits each 16-bit word by reading `$FB8000 + word`: the header `$ABCD`, the command, the payload size, the random token, the payload and a checksum.
-- **The answer is a two-phase commit.** The token is the seed the ST read at `RANDOM_TOKEN_SEED_ADDR` just before sending. The RP writes the token back to `RANDOM_TOKEN_ADDR`, then a new seed; the ST accepts the answer only when the token matches *and* the seed has moved. That also rejects the reads of a missing or not yet running cartridge, where both read the same.
-- **The timeout is a spin count, not time**, and it is per module: `COMMAND_TIMEOUT` counts turns of the loop that checks the token, so it is shorter on a faster CPU, and a module that defines its own before including `inc/sidecart_layout.s` keeps it.
-- **A retry is a new command.** It carries a fresh token, and the RP may already have executed the attempt whose answer the ST stopped waiting for. A command must be harmless to run twice, or carry its own sequence number.
-- **The RP answers first**, from its main loop, which drains the command ring on every pass without waiting. Measured on an ST: about 2 ms per command with a 4-byte payload, 3 ms with a 1 KB payload.
-- **A Mega STE's cache must be off while the ST talks to the cartridge**; its speed does not matter. `main.s` handles the setup menu. User firmware wraps each send in `megaste_cache_off` / `megaste_cache_back`.
-- **A 68030 (TT, Falcon) needs its instruction cache cleared** after code is copied into RAM and run. The senders do it when they copy their wait loop.
+The network exists only for NTP: nothing is downloaded. `ntp_pollSync()` is a state machine
+stepped from the main loop: nothing happens until Wi-Fi has an address, then it looks the server
+up and asks, retrying every 5 s until one answer arrives, and from then on counts from the RP's
+timer. `ntp_getUnixTime()` gives UTC seconds since 1970. The request and the answer's checks come
+from md-drives-emulator's `rtc.c`, whose query waits for the answer instead. The Mac applies its
+own time zone, kept in its parameter RAM.
 
-- **The cartridge window is read-only from the ST.** Writes to `$FA0000`-`$FAFFFF` are silently lost on the bus. The ST changes what the RP holds by sending a command, such as `CMD_SET_SHARED_VAR` below.
+### `blink.c`, `select.c`, `sdcard.c`
 
-If the user firmware hooks a trap (GEMDOS, BIOS, XBIOS) to stay resident, md-drives-emulator learned these on hardware:
+- **The LED** (the Pico W's, through the Wi-Fi chip, so it is written only after the answer):
+  `blink_activityPulse()` lights it for 25 ms after a card access for the Mac;
+  `blink_startCountSequence()` flashes it N times, 200 ms on and 200 ms off, for FD0's slot N,
+  and activity pulses do not interrupt it; `blink_toogle()` blinks it every 700 ms without a
+  usable card.
+- **SELECT** is watched on core 0 by `select_poll()`, which never blocks: a short press runs
+  `emul_selectShortPress()` on release, a press held 10 s is a factory reset.
+- **The card**: no card, or one that does not answer, is `MACDISK_CARD_NONE` (with card detect
+  off it fails the mount as not ready); no FAT or exFAT file system is `MACDISK_CARD_UNREADABLE`;
+  an app folder that cannot be created is `MACDISK_CARD_NO_FOLDER`.
 
-- **Push nothing on the caller's stack before knowing the call is yours.** TOS 1.04 starts GEM on a 132-byte stack and calls GEMDOS from it with about 110 bytes to spare; decide from `d0` (and `a0` for a user-mode caller) and run the calls you take on a stack of your own.
-- **Find the arguments where the caller left them.** From supervisor mode they are on `sp` (plus 2 when `_longframe` is set, on a 68010 or later); from user mode they are at `usp` as it is, since the format word goes on the supervisor stack only.
-- **Code reached from a trap's `rte` runs in the caller's mode.** In user mode the first 2 KB of memory is a bus error: no system variables there, and no sender that copies its wait loop (it reads `_dskbufp` at `$4C6`).
-- **Give the caller its registers back as TOS does**: every one but `d0` to a supervisor-mode caller, all but `a0` to a user-mode one. Programs count on it.
+### The template's modules
 
-`$FF00` (`CMD_SET_SHARED_VAR`, `CHANDLER_SET_SHARED_VAR` on the RP) is answered by the RP's chandler itself: "set shared variable d3 to d4". `main.s` uses it at every boot, through `detect_hw` and `get_tos_version`, to publish the machine (`_MCH` cookie, 0 for an ST) in shared variable 0 and the TOS version in variable 1.
+`romemul` (the ROM4 read engine), `commemul` (the ROM3 command ring), `chandler` (the command
+dispatcher), `tprotocol`, `gconfig`, `reset` and `settings` are the template's, unchanged in what
+they do; the template's documentation describes them. Two rules matter here: `chandler_loop()`
+must run in every loop that can block, and nothing slow goes between a callback and the answer.
 
-`$FF01` (`CMD_ST_HELLO`, `CHANDLER_ST_HELLO` on the RP) has no payload and is also answered by the chandler itself. `main.s` sends it first thing at every boot, until it is answered, so the RP knows the ST has booted: `chandler_stPresent()` is true from then on, and `chandler_consumeStBoot()` is true once per boot. `chandler_consumeSharedVarSet()` is true once after the ST has set shared variables with `$FF00`, so whatever shows them can wait for it instead of polling. The RP and the ST reboot independently, so after an RP-only reboot the RP has not heard from the ST, and what the ST published at its boot was cleared with the window.
+## Memory
 
-An example, a keystroke for the terminal:
+| Region | Origin | Length | Here |
+| --- | --- | --- | --- |
+| `FLASH` | `0x10000000` | 1024 K | The firmware: 493,484 bytes (a release build) |
+| `CONFIG_FLASH` | `0x101E0000` | 120 K | The app settings, one 4 KB sector per app |
+| `RAM` | `0x20000000` | 192 K | 71,152 bytes of static data; the heap is the rest, 125,456 bytes |
+| `ROM_IN_RAM` | `0x20030000` | 64 K | The cartridge window |
+| `SCRATCH_Y` | `0x20041000` | 4 K | Core 0's stack, with an MPU guard on its bottom 32 bytes |
 
-```asm
-    move.l d0, d3                   ; the key, as Cnecin returned it
-    send_sync APP_TERMINAL_KEYSTROKE, 4
-    bne.s .not_answered             ; Z clear: every attempt timed out
-```
+The heap ends where the cartridge window starts, and malloc returns NULL instead of panicking:
+every allocation checks for it. LIST's listing takes 26 KB of it from the first LIST on. Keep
+large buffers off core 0's 4 KB stack: `macdisk.c` keeps its `FILINFO`, paths and write buffer
+static.
 
-### Debugging in Visual Studio Code
+## The cartridge window
 
-#### Prerequisites
+The ST sees `ROM_IN_RAM` at `$FA0000`-`$FAFFFF`, read-only. The layout comes from the template
+(`CHANDLER_*` in `chandler.h`, and their counterparts such as `RANDOM_TOKEN_ADDR` and
+`APP_FREE_ADDR` in `target/atarist/src/inc/sidecart_layout.s`); never hard-code an address in it:
 
-Before trying to deploy and debug your first microfirmware app, you must deploy in your Pico W the *Booster* app. This app is responsible for downloading the microfirmware app from the micro SD card and flashing it to the Pico W. The *Booster* app is located in the [repository](https://github.com/sidecartridge/rp2-booster-bootloader). Use the debug version of the *Booster* app to deploy it in your Pico W. The debug version contains the `DEV APP` version with the UUID4 `44444444-4444-4444-8444-444444444444`. This UUID4 is used by the *Booster* app to download the microfirmware app from the micro SD card.
+| ST address | Size | Contents |
+| --- | --- | --- |
+| `$FA0000` | 8 KB | The cartridge code (`main.s`) |
+| `$FA2000` | 4 B | The sentinel: `CMD_RESET` for the boot screen once it has asked for Booster |
+| `$FA2004` | 252 B | The random token and its seed (the commands' answers), a reserved slot, 60 shared variables |
+| `$FA2100` | 512 B | The template's translation table: unused here |
+| `$FA2300` | ~48 KB | `APP_FREE`: the Mac's status block and buffer |
+| `$FAE0C0` | 8000 B | The template's framebuffer: unused here |
 
-On the web interface of the *Booster* app, select the `DEV APP` application and launch it. This will crete the basic structure for the microfirmware settings.  Without this step, the microfirmware app will not work properly.
+`APP_FREE` must stay at `$FA2300`: the Jackintosh ROMs read the status block there. In it
+(`macdisk.h`, every field a long in the 68000's byte order):
 
-#### Configuring Visual Studio Code
+| Offset | Contents |
+| --- | --- |
+| `+$00` | The last command's result: `MACDISK_OK` or a negative `MACDISK_ERR_*` |
+| `+$04`, `+$08` | TIME: UTC seconds since 1904, and its flags (`MACDISK_TIME_FLAG_VALID`) |
+| `+$0C` | `MACDISK_ID`, `$4A4B0001` ("JK", contract version 1), from the RP's boot on |
+| `+$10` | The unit table: per unit, flags, sectors, change counter and format |
+| `+$40` | The card's state (`MACDISK_CARD_*`) |
+| `+$44` | Per unit, a long: which image it holds, the FNV-1a hash of the image's full path (never 0), 0 when empty |
+| `+$100` | The buffer: sector data, the PRAM, LIST's and GET_SETTINGS' answers |
 
-After modifying paths in the `.vscode/launch.json` file, you can build the project directly from Visual Studio Code.
+The RP keeps the identity, the unit table and the card's state current: the Mac reads them at any
+time without a command.
 
-Review the installation prerequisites in the previous section. 
+## Commands
 
-#### Launching the app
+A command id is the app number in the high byte and the command in the low byte. The Jackintosh
+ROMs send app `$07` (the first app number no other SidecarTridge firmware uses):
 
-When debugging the app it will be automatically placed at the top memory of the flash memory. This is the place where default apps for the RP2040 microcontroller are placed.
+| Id | Name | What it does |
+| --- | --- | --- |
+| `$0700` | READ | d3 = unit and count, d4 = first sector: up to 32 sectors into the buffer |
+| `$0701` | WRITE | d3 = unit and count, d4 = first sector, then up to 2 sectors of data |
+| `$0702` | EJECT | d3 = unit: closes the image until the ST boots again |
+| `$0703` | TIME | Writes the time and its flags |
+| `$0704` | PRAM_READ | Copies `PRAM.BIN` (256 bytes) into the buffer |
+| `$0705` | PRAM_WRITE | 256 bytes of data: rewrites `PRAM.BIN` in place, synced before the answer |
+| `$0706` | LIST | d3 = first entry, d4 = `MACDISK_LIST_WHOLE_CARD` or 0, then a folder's path |
+| `$0707` | GET_SETTINGS | The 13 paths, FD0's current slot, the RTC settings, the "OPT1" marker and the ten ROM options into the buffer |
+| `$0708` | SET_SETTING | d3 = key (`MACDISK_KEY_*`), then a path, an RTC value or a ROM option |
 
-### Building a microfirmware app
+The cartridge's boot screen sends `$0002` (`EMUL_CMD_BOOSTER`, no payload). `$FF01`
+(`CMD_ST_HELLO`) and `$FF00` (`CMD_SET_SHARED_VAR`) are the template's own, answered by chandler
+before any callback.
 
-#### From the command line
+What each side may assume:
 
-To build a production ready microfirmware app, follow these steps:
+- **Every command writes its result before it is answered**, and is harmless to repeat: a retry
+  is a new command with a fresh token, and the RP may have run the first attempt already. Reads
+  and writes name an absolute sector, an eject of an empty unit succeeds, the PRAM and a setting
+  are written whole.
+- **The answer is a two-phase commit**: the RP writes the token back, then a new seed, and the ST
+  accepts the answer only when the token matches and the seed has moved.
+- **The RP answers first**, from a main loop that drains the command ring on every pass; an LED
+  write or a debug print goes after the answer. The slowest commands measured on the bench: a
+  SET that writes the flash and swaps an image, about 120 ms; the first PRAM_WRITE, about 150 ms.
+- **The two sides reboot independently.** The RP rewrites the window when it starts, so the
+  identity and the unit table read as zero until it is back. It publishes the identity, then the
+  units, then `MACDISK_CARD_OK`: wait for `MACDISK_CARD_OK` before trusting the unit table.
+- **A unit's image identity tells one image from another.** Its change counter restarts when the
+  RP does, so after an RP restart it cannot say whether the drive still holds the same image. The
+  identity is the 32-bit FNV-1a hash (basis `$811C9DC5`, prime 16777619) of the image's full path,
+  written before the unit's flags and change counter.
 
-1. Clone this repository:
+## The Atari ST side
 
-2. Navigate to the cloned repository:
+`target/atarist/src/main.s` is the whole cartridge (all 8 KB, placed by `userfw.ld`). TOS runs it
+after GEMDOS init (`CA_INIT` bit 27). It:
 
-```
-cd MYREPO
-```
+1. Turns a Mega STE's cache off (commands do not reach the RP with it on) and copies itself into
+   the 4 KB below the screen, where it runs, so an RP restart or reflash under it does no harm.
+2. Says hello (`CMD_ST_HELLO`) until the RP answers, then publishes the machine and TOS
+   (`detect_hw`, `get_tos_version`).
+3. Shows the boot screen with GEMDOS calls: a 40-column page (centred on 80-column screens) with
+   the title bar, `JACKINTOSH` and the version (from `version.txt`, through `build/version.inc`,
+   which the Makefile writes because vasm's `-D` takes no strings), the keys, the project's site
+   and the copyright. A 30 s countdown runs on `_hz_200`; any key other than X or G stops it.
+4. On X, or at the end of the countdown, sends `CMD_BOOSTER` until it is answered, waits up to
+   3 s for `CMD_RESET` in the sentinel, and resets the ST; the RP jumps to Booster.
+5. On G, puts the Mega STE's cache setting back and returns to TOS, which boots the GEM desktop.
 
-3. Trigger the `build.sh` script to build the firmware:
+## Testing
 
-To build a release version of the app, run the following command:
-```sh
-./build.sh pico_w release <YOUR UUID4 HERE>
-```
+There is no off-hardware test suite: the RP side runs on the device. With the Debug Probe and
+`tools/dev/console.py watch` capturing the console:
 
-To build a debug version of the app, run the following command:
-```sh
-./build.sh pico_w debug <YOUR UUID4 HERE>
-```
+- `tools/dev/disktest_harness.py` runs the disk self-test on the RP itself (or put `SELFTEST.RUN`
+  in the app folder and restart the RP; it writes `SELFTEST.LOG`).
+- `tools/dev/macdisk_harness.py` injects the Mac's commands through the debug mailbox and checks
+  what the 68000 would read, against host copies of the card's images; `--set` also checks the
+  chooser's SET and the SELECT step.
+- `tools/dev/tools_harness.py`, `select_harness.py` and `power_cycles.py` check the tools, the
+  SELECT button and cold boots.
 
-All applications need a unique UUID4. You can generate one using the `uuidgen` command in Linux or macOS, or by using an online UUID generator. If you are developing a new app, you can use the UUID4 for development `44444444-4444-4444-8444-444444444444`.
+The harnesses' commands share the result slot and the buffer with the ST's own: run them with the
+ST off or idle at the Jackintosh menu, never while the Mac uses its disks. The TOS boot screen
+can be checked in Hatari, from a copy of `main.s` without the hello and `detect_hw`, which wait
+for the RP forever. `tools/dev/README.md` has every command.
 
-4. The `dist` folder now houses the files `UUID4.uf2`, the `UUID4.json` file with the app description and the `rp.uf2.md5sum` with the MD5 hash of the binary file generated by the build process. 
+## Releasing
 
-5. Copy the `UUID4.uf2` and `UUID4.json` file to the micro SD card `/apps` folder. If you want to host your app in a remote repository, you will have to update or add the content of the `UUID4.json` file to the `apps.json` remote file. 
-
-
-
-### Issues
-
-#### Docker error
-
-```
-Unable to find image 'logronoide/atarist-toolkit-docker-i386:v0.0.1dev' locally
-docker: Error response from daemon: manifest for logronoide/atarist-toolkit-docker-i386:v0.0.1dev not found: manifest unknown: manifest unknown.
-See 'docker run --help'.
-```
-
-Please modify `stcmd` file located in the `/usr/local/bin/` folder to adjust manually the version and the architecture of your computer:
-
-```sh
-#!/bin/bash
-if [ -z "$ST_WORKING_FOLDER" ]
-then
-      echo 'ST_WORKING_FOLDER is empty. It should have the absolute path to the source code working folder.'
-      exit 1
-fi
-THEDOCKER="logronoide/atarist-toolkit-docker-x86_64:latest"
-THEUSER=$(id -u)
-THEGROUP=$(id -g)
-docker run -it --rm  -v ${ST_WORKING_FOLDER}:'/tmp' --user "${THEUSER}:${THEGROUP}" ${THEDOCKER} $@
-```
-
-[Previous: Hardware interface](/sidecartridge-multidevice/hardware_interface/){: .btn .mr-4 }
-[Main](/sidecartridge-multidevice/){: .btn .mr-4 }
-[Next: Parameters](/sidecartridge-multidevice/parameters_v2/){: .btn }
+- `desc/app.json` is the descriptor template: `build.sh` fills in `<APP_UUID>`, `<APP_VERSION>`
+  and `<BINARY_MD5_HASH>` on every build.
+- The app needs its own UUID4 (today it shares the development one), and with it
+  `ACONFIG_VERSION_NUMBER` back to 1.
+- The version is in `version.txt`; `CHANGELOG.md` gets the release's entry.
+- Tagging `v*` runs `.github/workflows/release.yml`, which builds, attaches the UF2 and the JSON
+  to the GitHub release and uploads them; the tag is the maintainer's call.

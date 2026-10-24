@@ -20,6 +20,11 @@
 #endif
 
 #define CHARACTER_GAP_MS 700
+// How long the LED stays on after the last activity pulse.
+#define BLINK_ACTIVITY_ON_US 25000
+// A counted sequence's flashes.
+#define BLINK_SEQUENCE_ON_MS 200
+#define BLINK_SEQUENCE_OFF_MS 200
 
 /**
  * @brief   Blinks an LED to represent a given character in Morse code.
@@ -62,5 +67,33 @@ void blink_on();
  * to turn off the blink.
  */
 void blink_toogle();
+
+/**
+ * @brief Emits a short non-blocking activity pulse on the LED.
+ *
+ * The LED is turned on at once (written only if it is off) and turned off by
+ * blink_poll() BLINK_ACTIVITY_ON_US after the last pulse. On a Pico W the LED
+ * is on the Wi-Fi chip and every write is a bus transaction, so call it after
+ * the ST's answer, never before.
+ */
+void blink_activityPulse(void);
+
+/**
+ * @brief Starts a counted LED flash sequence.
+ *
+ * The LED flashes `count` times without blocking the caller. Activity pulses
+ * are ignored until it ends.
+ *
+ * @param count Number of flashes to emit.
+ */
+void blink_startCountSequence(uint8_t count);
+
+/**
+ * @brief Advances a counted sequence, and turns the activity LED off once its
+ * pulse has run out.
+ *
+ * Call this regularly from the main loop.
+ */
+void blink_poll(void);
 
 #endif  // BLINK_H

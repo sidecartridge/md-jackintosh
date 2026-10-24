@@ -1,10 +1,13 @@
 {
   "uuid": "<APP_UUID>",
-  "name": "APP DEV Template",
-  "description": "Microfirmware Application Template for Atari ST",
-  "image": "https://placehold.co/256x256/png",
+  "name": "Jackintosh Multidrive Emulation",
+  "description": "Floppy and hard disk images, the clock and the PRAM for the Jackintosh ROMs, which turn an Atari ST/STE/MegaST/MegaSTE into a Macintosh Plus. Works only with the Jackintosh ROMs in the TOS sockets (a SidecarTridge TOS Emulator, or EPROMs): put your Mac disk images in /jackintosh on the microSD card and choose them in the Jackintosh menu. Under TOS it only offers to return to Booster or the GEM desktop. <a target='_blank' rel='noopener noreferrer' href='https://jackintosh.sidecartridge.com'>Learn more</a>",
+  "image": "https://raw.githubusercontent.com/sidecartridge/md-jackintosh/main/icon.png",
   "tags": [
-    "Sample"
+    "Jackintosh",
+    "Macintosh",
+    "Emulation",
+    "Disks"
   ],
   "devices": [
     "ST",

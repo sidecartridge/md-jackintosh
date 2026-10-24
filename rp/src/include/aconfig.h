@@ -15,6 +15,34 @@
 
 #define ACONFIG_PARAM_FOLDER "FOLDER"
 #define ACONFIG_PARAM_MODE "MODE"
+// The Mac's images, as full paths (macdisk.h): FD0's slots 1 to 10, FD1, HD0.
+#define ACONFIG_PARAM_FD0 "FD0"
+#define ACONFIG_PARAM_FD0_2 "FD0_2"
+#define ACONFIG_PARAM_FD0_3 "FD0_3"
+#define ACONFIG_PARAM_FD0_4 "FD0_4"
+#define ACONFIG_PARAM_FD0_5 "FD0_5"
+#define ACONFIG_PARAM_FD0_6 "FD0_6"
+#define ACONFIG_PARAM_FD0_7 "FD0_7"
+#define ACONFIG_PARAM_FD0_8 "FD0_8"
+#define ACONFIG_PARAM_FD0_9 "FD0_9"
+#define ACONFIG_PARAM_FD0_10 "FD0_10"
+#define ACONFIG_PARAM_FD1 "FD1"
+#define ACONFIG_PARAM_HD0 "HD0"
+// The time from NTP (macdisk.h's RTC keys), named as in md-drives-emulator.
+#define ACONFIG_PARAM_RTC_ENABLED "RTC_ENABLED"
+#define ACONFIG_PARAM_RTC_NTP_HOST "RTC_NTP_HOST"
+#define ACONFIG_PARAM_RTC_NTP_PORT "RTC_NTP_PORT"
+// The Jackintosh ROMs' options (macdisk.h), kept for them uninterpreted.
+#define ACONFIG_PARAM_ROM_OPTION_0 "ROM_OPTION_0"
+#define ACONFIG_PARAM_ROM_OPTION_1 "ROM_OPTION_1"
+#define ACONFIG_PARAM_ROM_OPTION_2 "ROM_OPTION_2"
+#define ACONFIG_PARAM_ROM_OPTION_3 "ROM_OPTION_3"
+#define ACONFIG_PARAM_ROM_OPTION_4 "ROM_OPTION_4"
+#define ACONFIG_PARAM_ROM_OPTION_5 "ROM_OPTION_5"
+#define ACONFIG_PARAM_ROM_OPTION_6 "ROM_OPTION_6"
+#define ACONFIG_PARAM_ROM_OPTION_7 "ROM_OPTION_7"
+#define ACONFIG_PARAM_ROM_OPTION_8 "ROM_OPTION_8"
+#define ACONFIG_PARAM_ROM_OPTION_9 "ROM_OPTION_9"
 
 #define ACONFIG_SUCCESS 0
 #define ACONFIG_INIT_ERROR -1
@@ -31,7 +59,10 @@
 enum {
   ACONFIG_BUFFER_SIZE = 4096,
   ACONFIG_MAGIC_NUMBER = 0x1234,
-  ACONFIG_VERSION_NUMBER = 0x0001
+  // 2 while developing: settings saved as 1 by the template build sharing the
+  // development UUID hold FOLDER /test. A release goes back to 1: make tag
+  // refuses anything else.
+  ACONFIG_VERSION_NUMBER = 0x0002
 };
 
 enum {

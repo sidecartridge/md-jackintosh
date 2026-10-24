@@ -104,9 +104,6 @@ add_compile_definitions(PICO_MALLOC_PANIC=$ENV{PICO_MALLOC_PANIC})
 # Creates a pico-sdk subdirectory in our project for the libraries
 pico_sdk_init()
 
-# Add u8g2 library
-add_subdirectory(u8g2)
-
 # Tell CMake where to find other source code
 add_subdirectory(${FATFS_SDK_PATH}/src build)
   
@@ -123,22 +120,18 @@ target_sources(${PROJECT_NAME} PRIVATE
         blink.c
         chandler.c
         commemul.c
-        devdownload.c
-        display.c
-        display_term.c
-        download.c
+        devdisktest.c
         emul.c
         gconfig.c
-        httpc/httpc.c
         hw_config.c
+        macdisk.c
         network.c
+        ntp.c
         reset.c
         romemul.c
         sdcard.c
         select.c
-        term.c
         tprotocol.c
-        md5/md5.c
         settings/settings.c)
 
 # Create map/bin/hex/uf2 files
@@ -151,8 +144,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     no-OS-FatFS-SD-SDIO-SPI-RPi-Pico                # FATFS library   
     pico_stdlib              # Core functionality
     pico_multicore          # Multicore support
-    pico_lwip_http           # lwIP's HTTP client, under httpc/
-    u8g2                     # for display
 )
 
 # Conditionally link the CYW43 architecture library if supported
@@ -189,37 +180,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 # Use reduced space for ROMs
 pico_set_binary_type(${PROJECT_NAME} rp)
-
-# HTTPS downloads. APP_DOWNLOAD_HTTPS=1 in the environment builds TLS in:
-# mbedTLS, lwIP's ALTCP layer and the memory they need. Unset or 0 builds HTTP
-# only, with neither linked. The C code, lwipopts.h and the build ID all follow
-# the one definition, and httpc.c is compiled into this target, not a library
-# of its own, so it cannot be built with a different value.
-set(APP_DOWNLOAD_HTTPS "$ENV{APP_DOWNLOAD_HTTPS}")
-if(APP_DOWNLOAD_HTTPS STREQUAL "")
-    set(APP_DOWNLOAD_HTTPS 0)
-endif()
-if(NOT APP_DOWNLOAD_HTTPS MATCHES "^[01]$")
-    message(FATAL_ERROR "APP_DOWNLOAD_HTTPS must be 0 or 1, not '${APP_DOWNLOAD_HTTPS}'")
-endif()
-if(APP_DOWNLOAD_HTTPS)
-    # Core 0's stack takes SCRATCH_X as well: 8 KB (see memmap_rp.ld).
-    target_link_options(${PROJECT_NAME} PRIVATE
-        "-Wl,--defsym=__core0_stack_takes_scratch_x=1")
-    target_sources(${PROJECT_NAME} PRIVATE mbedtls_ms_time.c)
-    # mbedTLS itself is compiled -Os whatever the build type. At -O3 (CMake
-    # Release) every TLS download failed: the server closed the connection
-    # about 0.5 s into the handshake. Bisected on the device to
-    # library/gcm.c (AES-GCM, the suite servers pick) alone; the whole library
-    # stays at -Os, the configuration Booster ships and every test host passed
-    # with. TLS speed is set by the network, not by this.
-    file(GLOB MBEDTLS_LIBRARY_SOURCES ${PICO_SDK_PATH}/lib/mbedtls/library/*.c)
-    set_source_files_properties(${MBEDTLS_LIBRARY_SOURCES}
-        PROPERTIES COMPILE_OPTIONS "-Os")
-    target_link_libraries(${PROJECT_NAME} PRIVATE
-        pico_lwip_mbedtls    # lwIP's ALTCP-over-mbedTLS layer
-        pico_mbedtls)        # mbedTLS
-endif()
 
 # Fetch the values from the environment variables
 set(RELEASE_TYPE $ENV{RELEASE_TYPE})
@@ -289,7 +249,6 @@ message("RELEASE_TYPE: " ${RELEASE_TYPE})
 message("RELEASE_VERSION: " ${RELEASE_VERSION})
 message("RELEASE_DATE: " ${RELEASE_DATE})
 message("DEBUG_MODE: " ${_DEBUG})
-message("APP_DOWNLOAD_HTTPS: " ${APP_DOWNLOAD_HTTPS})
 message("LATEST_RELEASE_URL: " ${LATEST_RELEASE_URL})
 
 # Pass these values to the C compiler
@@ -327,21 +286,17 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     PICO_USE_STACK_GUARDS=1
     PICO_HEAP_SIZE=0x8000)
 
-# HTTP only, or HTTP and HTTPS downloads (see APP_DOWNLOAD_HTTPS above)
-add_definitions(-DAPP_DOWNLOAD_HTTPS=${APP_DOWNLOAD_HTTPS})
-
 # build_id.h and build_id.c (RELEASE_BUILD_ID and the release_build_id symbol,
 # the git commit) are regenerated on every build; see build_id.cmake. They are
 # rewritten only when the ID changes, so only their users recompile. The symbol
 # is kept through --gc-sections so tools/dev/swd.py can read it over SWD.
-# A debug build's ID ends in +debug, an HTTPS build's in +https (before +debug)
-# and a build of another CMake type than Release carries that type (first), so
-# builds of one tree cannot be taken for each other on the device.
+# A debug build's ID ends in +debug and a build of another CMake type than
+# Release carries that type (first), so builds of one tree cannot be taken for
+# each other on the device.
 set(BUILD_ID_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/build_id)
 add_custom_target(build_id
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_CURRENT_LIST_DIR}
             -DOUT_DIR=${BUILD_ID_DIR} -DDEBUG_BUILD=${_DEBUG}
-            -DHTTPS_BUILD=${APP_DOWNLOAD_HTTPS}
             -DCMAKE_TYPE=${CMAKE_BUILD_TYPE}
             -P ${CMAKE_CURRENT_LIST_DIR}/build_id.cmake
     BYPRODUCTS ${BUILD_ID_DIR}/build_id.h ${BUILD_ID_DIR}/build_id.c

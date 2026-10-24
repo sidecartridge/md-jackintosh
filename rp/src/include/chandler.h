@@ -27,29 +27,21 @@
 // must match target/atarist/src/main.s):
 //
 //   $FA0000  CARTRIDGE             m68k header + code (max 8 KB)
-//   $FA2000  CMD_MAGIC_SENTINEL    4 B  (m68k polls here for NOP/RESET/
-//                                        BOOT_GEM/TERMINAL)
+//   $FA2000  CMD_MAGIC_SENTINEL    4 B  (the boot screen reads RESET here
+//                                        after asking for Booster)
 //   $FA2004  RANDOM_TOKEN          4 B  (chandler echoes the request token)
 //   $FA2008  RANDOM_TOKEN_SEED     4 B
 //   $FA200C  reserved              4 B
 //   $FA2010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots)
 //   $FA2100  APP_BUFFERS              ~48 KB arena
 //                                      The first 512 bytes (until $FA2300)
-//                                      are written by display_setupU8g2()
-//                                      with the high-res mask table the
-//                                      cartridge uses to render the
-//                                      framebuffer in 640x400 mode. Apps
-//                                      that don't use the high-res path
-//                                      can reclaim those 512 bytes; apps
-//                                      that do must skip the first
-//                                      CHANDLER_HIGHRES_TRANSTABLE_SIZE
-//                                      bytes of APP_BUFFERS.
+//                                      were the template's high-res mask
+//                                      table; unused here, and APP_FREE
+//                                      still starts after them.
 //   $FA2300  APP_FREE                 free for app-specific use until the
 //                                      framebuffer (~48 KB)
-//   $FAE0C0  FRAMEBUFFER         8000 B  (320x200 mono; sits at the top
-//                                         so an overrun walks off the end
-//                                         of the 64 KB region and into
-//                                         unused RP RAM)
+//   $FAE0C0  FRAMEBUFFER         8000 B  (the template's 320x200 mono
+//                                         framebuffer, unused here)
 //   $FAFFFF  end of region
 #define CHANDLER_CARTRIDGE_CODE_SIZE       0x2000  /* 8 KB cartridge budget */
 #define CHANDLER_SHARED_BLOCK_OFFSET       CHANDLER_CARTRIDGE_CODE_SIZE
@@ -64,9 +56,9 @@
 #define CHANDLER_APP_BUFFERS_OFFSET                                            \
   (CHANDLER_SHARED_VARIABLES_OFFSET + (CHANDLER_SHARED_VARIABLES_SLOTS * 4))
 
-/* High-res mask table written by display_generateMaskTable() at the start
- * of APP_BUFFERS. 256 entries x 16 bits = 512 bytes. Apps using the
- * high-res rendering path must not reuse this region. */
+/* The template's high-res mask table, at the start of APP_BUFFERS: 256
+ * entries x 16 bits = 512 bytes. This app does not use it; the size stays
+ * because APP_FREE, where the Mac's status block is, starts after it. */
 #define CHANDLER_HIGHRES_TRANSTABLE_OFFSET CHANDLER_APP_BUFFERS_OFFSET
 #define CHANDLER_HIGHRES_TRANSTABLE_SIZE   0x200  /* 512 bytes */
 #define CHANDLER_APP_FREE_OFFSET                                               \
@@ -82,7 +74,7 @@
 #define CHANDLER_BUFFER_TYPE 2
 
 // Commands chandler answers itself, before any registered callback sees them.
-// Their app number is out of the way of the apps' own (the terminal is 0).
+// Their app number is out of the way of the apps' own.
 #define CHANDLER_APP_FRAMEWORK 0xFF
 // Set shared variable d3 to d4. Sent by the m68k's detect_hw and
 // get_tos_version at every boot (CMD_SET_SHARED_VAR in main.s).
@@ -127,7 +119,7 @@ bool chandler_stPresent(void);
  * @brief True once after each ST boot, then false until the next one.
  *
  * The app starts the ST's session fresh when it sees it: the RP keeps its own
- * state across an ST reset (the terminal, the sentinel, the shared variables),
+ * state across an ST reset (the sentinel, the shared variables),
  * and only the random token and seed are meant to carry on.
  */
 bool chandler_consumeStBoot(void);

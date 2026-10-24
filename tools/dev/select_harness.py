@@ -5,7 +5,8 @@ Each case presses SELECT through swd.py's GPIO input override, then reads the
 firmware's own state over SWD and says whether it matches the behaviour:
 
   bounce           15 ms press: ignored (the debounce is 30 ms)
-  short            short press: the RP restarts into the app
+  short            short press: the RP restarts into the app (not in a Mac
+                   session, where it steps FD0's slots)
   long             a press held past SELECT_LONG_RESET: factory reset (the
                    global settings are erased and the RP restarts into
                    Booster, which then clears every app's settings). Needs
@@ -16,8 +17,8 @@ firmware's own state over SWD and says whether it matches the behaviour:
   backup FILE      save the settings flash (app configs, lookup, global config)
   restore FILE     write a backup back and reset the RP
 
-A short press restarts only the RP: the ST keeps running its menu loop from
-RAM, and its menu then says the RP has not heard its hello yet.
+A short press restarts only the RP: the ST keeps running its boot screen from
+RAM.
 
 Usage: python3 tools/dev/select_harness.py <case> [FILE] [--elf ELF] [--force]
 """
@@ -33,7 +34,7 @@ TIMERAWL = 0x40054028
 FLASH_END = 0x10200000  # 2 MB flash on the SidecarTridge Multi-device
 BOUNCE_MS = 15
 
-SYMBOLS = ("menuScreenActive", "keepActive", "_config_flash_start")
+SYMBOLS = ("keepActive", "macSession", "_config_flash_start")
 
 
 class Harness:
@@ -51,7 +52,6 @@ class Harness:
     def state(self) -> dict:
         return {
             "uptime_us": swd.read_word(TIMERAWL),
-            "menu": self.byte("menuScreenActive"),
             "running": self.byte("keepActive"),
         }
 
@@ -72,12 +72,12 @@ class Harness:
                 pass  # the debug port drops while the chip restarts
         return False
 
-    def wait_menu(self, timeout: float = 30.0) -> bool:
-        """True once the restarted app has drawn its setup menu."""
+    def wait_app(self, timeout: float = 30.0) -> bool:
+        """True once the restarted RP runs this app again."""
         end = time.time() + timeout
         while time.time() < end:
             try:
-                if self.byte("menuScreenActive") and self.byte("keepActive"):
+                if self.byte("keepActive"):
                     return True
             except swd.SwdError:
                 pass
@@ -86,8 +86,7 @@ class Harness:
 
 
 def show(label: str, st: dict) -> None:
-    print(f"{label}: setup menu {'shown' if st['menu'] else 'not shown'}; "
-          f"main loop {'running' if st['running'] else 'leaving'}; "
+    print(f"{label}: main loop {'running' if st['running'] else 'leaving'}; "
           f"uptime {st['uptime_us'] / 1e6:.1f} s")
 
 
@@ -109,15 +108,20 @@ def case_bounce(h: Harness) -> int:
 
 
 def case_short(h: Harness) -> int:
+    if h.byte("macSession"):
+        print("the ST is in a Mac session: a short press steps FD0 instead of "
+              "restarting the RP (macdisk_harness.py --set checks that). Reset "
+              "the ST into the TOS boot screen, or switch it off and restart "
+              "the RP, then try again.")
+        return 2
     before = h.state()
     show("before", before)
     h.press(swd.SELECT_SHORT_MS)
     reset = h.wait_reset(before["uptime_us"])
-    back = reset and h.wait_menu()
+    back = reset and h.wait_app()
     if reset:
         show("after ", h.state())
-    return verdict(reset and back, "a short press restarts the RP into the "
-                   "app's setup menu (reset the ST for its hello)")
+    return verdict(reset and back, "a short press restarts the RP into the app")
 
 
 def settings_region(h: Harness) -> tuple[int, int]:

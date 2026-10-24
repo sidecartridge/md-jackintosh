@@ -36,7 +36,8 @@
 #define DEVHOOKS_MAGIC 0x444B4831u  // "DKH1"
 #define DEVHOOKS_KIND_PROTOCOL 1u
 #define DEVHOOKS_KIND_APP 2u
-#define DEVHOOKS_PAYLOAD_WORDS 16u
+// Room for one disk write: token, d3-d5 and two sectors (macdisk.h).
+#define DEVHOOKS_PAYLOAD_WORDS 520u
 
 typedef uint32_t (*devhooks_app_handler_t)(uint16_t commandId,
                                            const uint16_t *payload,

@@ -1,7 +1,7 @@
 ; SidecarTridge Multi-device: the cartridge window and the command channel.
 ;
-; Included by main.s and by every module that talks to the RP (userfw.s among
-; them), before inc/sidecart_macros.s and inc/sidecart_functions.s. The layout
+; Included by main.s and by every module that talks to the RP, before
+; inc/sidecart_macros.s and inc/sidecart_functions.s. The layout
 ; must match rp/src/include/chandler.h: never hard-code an address in the
 ; window, use these names.
 ;
@@ -27,12 +27,6 @@ APP_BUFFERS_ADDR        equ (SHARED_BLOCK_ADDR + $100)                 ; $FA2100
 TRANSTABLE              equ APP_BUFFERS_ADDR                           ; high-res translation table (512 B)
 APP_FREE_ADDR           equ (APP_BUFFERS_ADDR + $200)                  ; $FA2300: the app's own buffers,
                                                                        ; up to FRAMEBUFFER_ADDR
-
-; User firmware entry point. The cartridge image places userfw.s at offset
-; $0800 of BOOT.BIN (target/atarist/src/userfw.ld): main.s gets the first 2 KB
-; ($0000..$07FF), userfw.s the next 6 KB ($0800..$1FFF). CARTRIDGE_CODE_SIZE
-; covers both.
-USERFW                  equ (ROM4_ADDR + $800)                         ; $FA0800
 
 RANDOM_TOKEN_ADDR       equ (CMD_MAGIC_SENTINEL_ADDR + 4)              ; $FA2004
 RANDOM_TOKEN_SEED_ADDR  equ (RANDOM_TOKEN_ADDR + 4)                    ; $FA2008

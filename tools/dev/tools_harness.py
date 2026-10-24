@@ -12,7 +12,7 @@ restarts the RP on the way.
     python3 tools/dev/tools_harness.py --flash    # also flash the debug build first
     python3 tools/dev/tools_harness.py --reset    # also restart the RP at the end
 
-Leaves the setup menu on screen. Exits 0 when every check passes. Writes
+Exits 0 when every check passes. Writes
 tools/dev/logs/tools-harness-<time>.json.
 """
 
@@ -72,23 +72,6 @@ class LogCursor:
         return False
 
 
-def text():
-    rc, out = swdpy("text")
-    return out if rc == 0 else ""
-
-
-def keys(s, pause=0.4):
-    for ch in s:
-        swdpy("key", ch)
-        time.sleep(pause)
-
-
-def to_menu():
-    keys("\nm\n")
-    time.sleep(1.0)
-    return "Select an option" in text()
-
-
 def heap_in_use_kb():
     rc, out = swdpy("heap")
     m = re.search(r"in use ([0-9.]+) KB", out)
@@ -146,34 +129,24 @@ def device_checks(do_reset):
     check("console text is clean (baud rate matches)", printable / total > 0.98,
           f"{100 * printable / total:.1f}% printable in the last 15 lines")
 
-    print("screen, text, shared")
-    ok = to_menu()
-    check("setup menu is on screen", ok)
-    png = os.path.join(DEV, "logs", "tools-harness-screen.png")
-    rc, out = swdpy("screen", png)
-    lit = re.search(r"(\d+) pixels lit", out)
-    check("screen renders the framebuffer", rc == 0 and lit and int(lit.group(1)) > 1000,
-          out.strip())
+    print("shared")
     rc, out = swdpy("shared")
     check("shared reads sentinel, token and seed",
           rc == 0 and all(s in out for s in ("command sentinel", "random token", "seed")))
 
-    print("mailbox: key, inject, app")
+    print("mailbox: inject, app")
+    # MACDISK_CMD_TIME, which answers MACDISK_OK whether NTP has answered or not:
+    # a marker in its result slot first, which no result has.
+    defs = swd.include_defines()
+    result = swd.cartridge_window(elf) + defs["MACDISK_RESULT_OFFSET"]
+    swd.openocd(f"mww 0x{result:08x} 0x7fff7fff")
     cur = LogCursor()
-    keys("h\n")
-    time.sleep(0.8)
-    check("key: 'h' + Enter shows the help", "Available commands" in text())
-    check("key: the firmware logged both keystrokes",
-          cur.wait(r"Keystroke: h\.") and cur.wait(r"Keystroke: 10\."))
-    check("key: back to the menu", to_menu())
-    cur = LogCursor()
-    rc, out = swdpy("inject", "0x0001", "0x0068", "0")
-    rc2, _ = swdpy("inject", "0x0001", "0x000A", "0")
-    time.sleep(0.8)
-    check("inject: raw keystroke frames reach the terminal",
-          rc == 0 and rc2 == 0 and cur.wait(r"Injected command 0001") and
-          "Available commands" in text())
-    to_menu()
+    rc, out = swdpy("inject", f"0x{defs['MACDISK_CMD_TIME']:04x}")
+    time.sleep(0.5)
+    answered = swd.read_word(result)
+    check("inject: a command reaches its callback",
+          rc == 0 and cur.wait(rf"Injected command {defs['MACDISK_CMD_TIME']:04x}")
+          and answered == defs["MACDISK_OK"], f"result 0x{answered:08x}")
     before = heap_in_use_kb()
     rc, out = swdpy("app", "heap_hold", "16")
     held = heap_in_use_kb()
@@ -197,31 +170,32 @@ def device_checks(do_reset):
           and "frames" in out2, out2.strip().splitlines()[-1] if out2.strip() else "")
 
     print("select (one OpenOCD session: press, look, release)")
+    mac_session = swd.read_memory(swd.elf_symbols(elf, "macSession")["macSession"][0], 1)[0]
     select_cur = LogCursor()
-    defs = swd.include_defines()
     gpio = defs["SELECT_GPIO"]
     ctrl = swd.IO_BANK0 + 4 + 8 * gpio
     normal = swd.read_word(ctrl) & ~(3 << swd.INOVER_SHIFT)
     pressed = normal | (swd.INOVER_HIGH << swd.INOVER_SHIFT)
-    addr, size = swd.elf_symbols(elf, "screen")["screen"]
     out = swd.openocd(f"mww 0x{ctrl:08x} 0x{pressed:08x}", "sleep 2500",
-                      "mdw 0xd0000004", f"mdb 0x{addr:08x} {size}",
-                      f"mww 0x{ctrl:08x} 0x{normal:08x}", check=False)
+                      "mdw 0xd0000004", f"mww 0x{ctrl:08x} 0x{normal:08x}",
+                      check=False)
     m = re.search(r"0xd0000004: ([0-9a-f]+)", out)
     check("select: the pin reads pressed while held",
           m and (int(m.group(1), 16) >> gpio) & 1 == 1)
-    data = bytes(int(x, 16) for ln in
-                 re.findall(r"0x[0-9a-f]+: ((?:[0-9a-f]{2} ?)+)", out)[1:]
-                 for x in ln.split())
-    check("select: the menu shows it pressed", re.search(rb"SELECT +: Pressed", data) is not None)
     check("select: override cleared afterwards",
           (swd.read_word(ctrl) >> swd.INOVER_SHIFT) & 3 == 0)
 
     # A released SELECT is a short press, which restarts the RP (since SELECT
     # was wired up): wait until the app loop is back before attaching GDB, or
-    # its flash probe lands in the middle of boot2 setting up XIP.
-    booted = select_cur.wait(r"Start the app loop", 60)
-    check("select: the release restarts the RP into its app loop", booted)
+    # its flash probe lands in the middle of boot2 setting up XIP. In a Mac
+    # session it steps FD0's slots instead, and the RP keeps running.
+    if mac_session:
+        restarted = select_cur.wait(r"Start the app loop", 5)
+        check("select: in a Mac session the release does not restart the RP",
+              not restarted)
+    else:
+        booted = select_cur.wait(r"Start the app loop", 60)
+        check("select: the release restarts the RP into its app loop", booted)
     print("crash, postmortem")
     rc, out = swdpy("crash")
     check("crash reads the watchdog reason", rc == 0 and "watchdog reason" in out)
@@ -236,8 +210,6 @@ def device_checks(do_reset):
         booted = cur.wait(r"Start the app loop", timeout=30)
         rc2, _ = swdpy("running", elf, "--timeout", "10")
         check("reset: the RP reboots into the same firmware", rc == 0 and booted and rc2 == 0)
-        time.sleep(1.5)
-        check("reset: the menu is back", "Select an option" in text())
 
 
 def main():
