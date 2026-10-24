@@ -188,7 +188,7 @@ must run in every loop that can block, and nothing slow goes between a callback 
 
 | Region | Origin | Length | Here |
 | --- | --- | --- | --- |
-| `FLASH` | `0x10000000` | 1024 K | The firmware: 491,612 bytes (a release build) |
+| `FLASH` | `0x10000000` | 1024 K | The firmware: 493,484 bytes (a release build) |
 | `CONFIG_FLASH` | `0x101E0000` | 120 K | The app settings, one 4 KB sector per app |
 | `RAM` | `0x20000000` | 192 K | 71,152 bytes of static data; the heap is the rest, 125,456 bytes |
 | `ROM_IN_RAM` | `0x20030000` | 64 K | The cartridge window |

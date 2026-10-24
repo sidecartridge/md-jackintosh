@@ -225,7 +225,7 @@ The heap's limit, `__StackLimit`, is the end of `RAM`, where the cartridge windo
 `rp/src/CMakeLists.txt`, the only place it reaches the SDK's `malloc.c`) malloc returns NULL instead
 of panicking. Every allocation in `rp/src` checks for NULL.
 `PICO_HEAP_SIZE` (32 KB) is the heap the link guarantees: a build whose static data leaves less
-fails with ``region `RAM' overflowed``. A release build of this app: flash 491,612 bytes, static RAM
+fails with ``region `RAM' overflowed``. A release build of this app: flash 493,484 bytes, static RAM
 71,152, heap 125,456; LIST's listing takes 26 KB of the heap from the first LIST on.
 
 Core 0's stack is all of `SCRATCH_Y` (`PICO_STACK_SIZE` 4 KB) with an MPU guard on its bottom 32

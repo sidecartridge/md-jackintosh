@@ -5,12 +5,13 @@
 The first version of md-jackintosh, built from the SidecarTridge
 Multi-device microfirmware template v1.3.0 (its history is in that
 repository). It serves the disks, the clock and the parameter RAM of the
-Jackintosh ROMs, which turn an Atari ST or STE into a Macintosh Plus at
-power-on with no TOS and talk to the cartridge themselves. Under TOS the
-cartridge only shows a boot screen. Seen on an STE: System 6.0.8 boots from
-a floppy image and from a hard disk image, Word 4.0a runs from the second
-floppy and saves to it, a Restart comes back to the Finder, PageMaker 3.5
-installs from five floppies stepped with SELECT, and Tetris runs.
+Jackintosh ROMs, which turn an Atari ST, STE, Mega ST or Mega STE into a
+Macintosh Plus at power-on with no TOS and talk to the cartridge
+themselves. Under TOS the cartridge only shows a boot screen. Seen on an
+STE: System 6.0.8 boots from a floppy image and from a hard disk image,
+Word 4.0a runs from the second floppy and saves to it, a Restart comes
+back to the Finder, PageMaker 3.5 installs from five floppies stepped
+with SELECT, and Tetris runs.
 
 ### Added
 
