@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.0 (unreleased) - md-jackintosh
+## v1.0.0 (2026-11-07) - md-jackintosh
 
 The first version of md-jackintosh, built from the SidecarTridge
 Multi-device microfirmware template v1.3.0 (its history is in that
@@ -80,9 +80,7 @@ with SELECT, and Tetris runs.
 ### Changed from the template
 
 - The app folder is `/jackintosh` (the `FOLDER` default), created if it
-  is missing. The app settings version is 2 while developing, so settings
-  saved by the template build under the shared development UUID are not
-  loaded.
+  is missing.
 - The cartridge image is `main.s` alone, with the whole 8 KB.
 - The debug mailbox holds 520 payload words, one full disk write.
 - A missing card is told from a card with no file system: with card detect
